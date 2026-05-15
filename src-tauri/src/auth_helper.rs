@@ -46,8 +46,10 @@ pub fn status() -> AuthHelperStatus {
 pub fn install(enable_touchid: bool) -> Result<()> {
     let (user, caddy_dir) = user_and_caddy_dir()?;
 
-    // sudoers에서 스페이스는 `\ ` 로 이스케이프합니다.
-    let caddy_dir_escaped = caddy_dir.replace(' ', r"\ ");
+    // sudoers는 backslash 이스케이프를 지원하지 않습니다.
+    // 공백 자리에 `?`(단일 문자 와일드카드)를 써서 매칭합니다.
+    // "Application Support" → "Application?Support"
+    let caddy_dir_pattern = caddy_dir.replace(' ', "?");
 
     let sudoers_content = format!(
         "# Managed by Perch — do not edit manually\n\
@@ -57,7 +59,7 @@ pub fn install(enable_touchid: bool) -> Result<()> {
          {user} ALL=(root) NOPASSWD: /usr/sbin/chown -R {user}:staff {caddy}\n",
         user = user,
         staging = HOSTS_STAGING_PATH,
-        caddy = caddy_dir_escaped,
+        caddy = caddy_dir_pattern,
     );
 
     validate_sudoers_content(&sudoers_content)?;
@@ -203,13 +205,13 @@ mod tests {
     }
 
     #[test]
-    fn caddy_dir_spaces_are_escaped() {
+    fn caddy_dir_spaces_become_glob_wildcard() {
         let caddy = "/Users/me/Library/Application Support/Caddy";
-        let escaped = caddy.replace(' ', r"\ ");
-        assert_eq!(
-            escaped,
-            r"/Users/me/Library/Application\ Support/Caddy"
-        );
-        assert!(!escaped.contains("  "));
+        let pattern = caddy.replace(' ', "?");
+        assert_eq!(pattern, "/Users/me/Library/Application?Support/Caddy");
+        // `?` matches any single character in sudoers — including a space —
+        // without triggering a syntax error from visudo.
+        assert!(!pattern.contains(' '));
+        assert!(!pattern.contains('\\'));
     }
 }

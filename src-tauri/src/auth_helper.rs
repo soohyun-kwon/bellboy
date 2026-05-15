@@ -1,54 +1,39 @@
-//! One-time privileged-helper setup.
+//! 관리자 권한 자동 캐싱.
 //!
-//! # 문제
-//! Perch는 `/etc/hosts` 편집과 Caddy 데이터 디렉토리 소유권 복구에 매번 osascript
-//! admin 프롬프트를 띄웁니다. 앱을 껐다 켤 때마다 비밀번호를 입력해야 합니다.
+//! # 흐름
+//! 1. 권한이 필요한 작업 시도 → `sudo -n` 먼저 시도
+//! 2. 실패(첫 실행) → osascript로 **실제 작업 + sudoers 설치 + Touch ID(pam_tid) 설치**를
+//!    하나의 프롬프트로 처리
+//! 3. 이후 재실행 → `sudo -n` 성공, 프롬프트 없음
 //!
-//! # 해결
-//! `/etc/sudoers.d/perch` 드롭인 파일을 **한 번** 설치합니다. 이후 Perch는 해당
-//! 명령에 한해 `sudo -n`으로 비밀번호 없이 실행합니다. osascript 프롬프트는 오직
-//! 최초 설치 시에만 표시됩니다.
-//!
-//! Touch ID 옵션을 켜면 `/etc/pam.d/sudo_local`에 `auth sufficient pam_tid.so`를
-//! 추가해 이후 sudo 인증 시 지문을 사용할 수 있게 됩니다. (macOS 13.3+ 에서
-//! `sudo_local`은 시스템 업데이트에 덮어써지지 않는 안전한 파일입니다.)
+//! # Touch ID
+//! `/etc/pam.d/sudo_local`에 `auth sufficient pam_tid.so`를 추가합니다.
+//! macOS 13.3+에서 `sudo_local`은 시스템 업데이트에 덮어써지지 않습니다.
+//! sudo 자체가 Touch ID를 지원하게 되므로, 다른 터미널 sudo 명령에도 지문이 적용됩니다.
 //!
 //! # 범위
-//! sudoers 규칙은 Perch가 필요한 명령 두 개만 허용합니다:
-//! - `/bin/cp <staging> /etc/hosts`   — hosts 동기화
-//! - `/usr/sbin/chown -R <user>:staff <caddy-dir>` — 소유권 복구
+//! sudoers 규칙은 Perch가 실제로 필요한 두 명령만 허용합니다:
+//! - `/bin/cp /tmp/perch-hosts-staging /etc/hosts`
+//! - `/usr/sbin/chown -R <user>:staff <caddy-dir>`
 
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
 use std::process::Command;
 
-/// Hosts 파일 스테이징 경로. 스페이스가 없는 고정 경로를 써야 sudoers 규칙이
-/// 인수를 정확히 매칭할 수 있습니다.
+/// hosts 스테이징 고정 경로. 공백 없는 경로여야 sudoers 규칙이 정확히 매칭됩니다.
 pub const HOSTS_STAGING_PATH: &str = "/tmp/perch-hosts-staging";
 const SUDOERS_PATH: &str = "/etc/sudoers.d/perch";
 const PAM_SUDO_LOCAL_PATH: &str = "/etc/pam.d/sudo_local";
 
-#[derive(Debug, Clone, Serialize)]
-pub struct AuthHelperStatus {
-    pub is_installed: bool,
-    pub touchid_enabled: bool,
+pub fn is_installed() -> bool {
+    std::path::Path::new(SUDOERS_PATH).exists()
 }
 
-pub fn status() -> AuthHelperStatus {
-    AuthHelperStatus {
-        is_installed: std::path::Path::new(SUDOERS_PATH).exists(),
-        touchid_enabled: pam_sudo_local_has_tid(),
-    }
-}
-
-/// sudoers 드롭인을 설치합니다. `enable_touchid`가 true이면 `/etc/pam.d/sudo_local`에
-/// Touch ID 줄도 함께 추가합니다. osascript 프롬프트가 한 번 뜹니다.
-pub fn install(enable_touchid: bool) -> Result<()> {
+/// 권한이 필요한 작업과 sudoers/pam 설치를 **하나의 osascript 프롬프트**로 처리합니다.
+///
+/// `main_shell_cmd`: 실제로 실행해야 할 셸 명령 (예: `/bin/cp '/tmp/...' '/etc/hosts'`).
+/// 이 명령 뒤에 sudoers + pam_tid 설치 명령을 `&&`로 이어 붙입니다.
+pub fn install_with_command(main_shell_cmd: &str) -> Result<()> {
     let (user, caddy_dir) = user_and_caddy_dir()?;
-
-    // sudoers는 backslash 이스케이프를 지원하지 않습니다.
-    // 공백 자리에 `?`(단일 문자 와일드카드)를 써서 매칭합니다.
-    // "Application Support" → "Application?Support"
     let caddy_dir_pattern = caddy_dir.replace(' ', "?");
 
     let sudoers_content = format!(
@@ -61,67 +46,64 @@ pub fn install(enable_touchid: bool) -> Result<()> {
         staging = HOSTS_STAGING_PATH,
         caddy = caddy_dir_pattern,
     );
-
     validate_sudoers_content(&sudoers_content)?;
 
-    // 임시 파일에 먼저 써두고 osascript로 제자리에 설치합니다.
-    let tmp = format!("/tmp/perch-sudoers-{}.tmp", std::process::id());
-    std::fs::write(&tmp, &sudoers_content)
-        .with_context(|| format!("stage sudoers at {}", tmp))?;
+    // osascript 실행 전에 임시 파일들을 먼저 써둡니다 (user 권한으로 가능).
+    let sudoers_tmp = format!("/tmp/perch-sudoers-{}.tmp", std::process::id());
+    let pam_tmp = format!("/tmp/perch-pam-{}.tmp", std::process::id());
 
-    let mut script = format!(
-        "/usr/bin/install -m 0440 -o root -g wheel '{tmp}' '{dst}'",
-        tmp = tmp,
-        dst = SUDOERS_PATH
-    );
+    std::fs::write(&sudoers_tmp, &sudoers_content)
+        .with_context(|| format!("stage sudoers at {}", sudoers_tmp))?;
 
-    if enable_touchid {
-        // sudo_local은 시스템 업데이트에도 살아남는 macOS 13.3+ 권장 방식입니다.
-        // 이미 pam_tid 줄이 있으면 중복 추가하지 않습니다.
-        if !pam_sudo_local_has_tid() {
-            let pam_content =
-                "# Managed by Perch\nauth       sufficient     pam_tid.so\n";
-            let pam_tmp = format!("/tmp/perch-pam-{}.tmp", std::process::id());
-            std::fs::write(&pam_tmp, pam_content)
-                .with_context(|| format!("stage pam at {}", pam_tmp))?;
-            script.push_str(&format!(
-                " && /usr/bin/install -m 0644 -o root -g wheel '{pam_tmp}' '{dst}'",
-                pam_tmp = pam_tmp,
-                dst = PAM_SUDO_LOCAL_PATH
-            ));
-        }
+    let pam_content = "# Managed by Perch\nauth       sufficient     pam_tid.so\n";
+    std::fs::write(&pam_tmp, pam_content)
+        .with_context(|| format!("stage pam at {}", pam_tmp))?;
+
+    // 세 작업을 하나의 셸 명령으로 이어 붙입니다:
+    //   1. 실제 작업 (hosts cp 또는 chown)
+    //   2. sudoers 드롭인 설치
+    //   3. pam_tid.so 설치 (없는 경우에만)
+    let mut steps = vec![
+        main_shell_cmd.to_string(),
+        format!(
+            "/usr/bin/install -m 0440 -o root -g wheel '{sudoers_tmp}' '{SUDOERS_PATH}'"
+        ),
+    ];
+    if !pam_sudo_local_has_tid() {
+        steps.push(format!(
+            "/usr/bin/install -m 0644 -o root -g wheel '{pam_tmp}' '{PAM_SUDO_LOCAL_PATH}'"
+        ));
     }
 
+    let combined = steps.join(" && ");
     let osa = format!(
         "do shell script \"{}\" with administrator privileges",
-        script
+        combined
     );
+
     let output = Command::new("osascript")
         .args(["-e", &osa])
         .output()
         .context("spawn osascript")?;
 
-    // 임시 파일 정리 (실패해도 계속)
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&sudoers_tmp);
+    let _ = std::fs::remove_file(&pam_tmp);
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         if err.contains("User canceled") || err.contains("-128") {
             return Err(anyhow!("사용자가 관리자 권한 요청을 취소했습니다"));
         }
-        return Err(anyhow!("설치 실패: {}", err));
+        return Err(anyhow!("osascript failed: {}", err));
     }
-
     Ok(())
 }
 
-/// sudoers 드롭인을 제거합니다. Touch ID 설정(`/etc/pam.d/sudo_local`)도 함께
-/// 제거할지 `remove_touchid`로 선택합니다.
-pub fn uninstall(remove_touchid: bool) -> Result<()> {
-    let mut script = format!("/bin/rm -f '{}'", SUDOERS_PATH);
-
-    if remove_touchid && pam_sudo_local_has_tid() {
-        script.push_str(&format!(" && /bin/rm -f '{}'", PAM_SUDO_LOCAL_PATH));
+/// sudoers 드롭인과 pam_tid 설정을 제거합니다.
+pub fn uninstall() -> Result<()> {
+    let mut script = format!("/bin/rm -f '{SUDOERS_PATH}'");
+    if pam_sudo_local_has_tid() {
+        script.push_str(&format!(" && /bin/rm -f '{PAM_SUDO_LOCAL_PATH}'"));
     }
 
     let osa = format!(
@@ -143,7 +125,7 @@ pub fn uninstall(remove_touchid: bool) -> Result<()> {
     Ok(())
 }
 
-// ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
+// ─── 내부 헬퍼 ──────────────────────────────────────────────────────────────
 
 fn user_and_caddy_dir() -> Result<(String, String)> {
     let user = std::env::var("USER").context("USER not set")?;
@@ -155,7 +137,6 @@ fn user_and_caddy_dir() -> Result<(String, String)> {
     Ok((user, caddy_dir))
 }
 
-/// `visudo -c -f`로 생성한 sudoers 내용의 문법을 검증합니다.
 fn validate_sudoers_content(content: &str) -> Result<()> {
     let tmp = format!("/tmp/perch-sudoers-validate-{}.tmp", std::process::id());
     std::fs::write(&tmp, content).context("write validation temp")?;
@@ -209,8 +190,6 @@ mod tests {
         let caddy = "/Users/me/Library/Application Support/Caddy";
         let pattern = caddy.replace(' ', "?");
         assert_eq!(pattern, "/Users/me/Library/Application?Support/Caddy");
-        // `?` matches any single character in sudoers — including a space —
-        // without triggering a syntax error from visudo.
         assert!(!pattern.contains(' '));
         assert!(!pattern.contains('\\'));
     }

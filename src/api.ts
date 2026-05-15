@@ -15,16 +15,6 @@ export const api = {
     invoke<CertificateTrustStatus>('get_certificate_trust_status'),
   trustCaddyCertificate: () =>
     invoke<CertificateTrustStatus>('trust_caddy_certificate'),
-  getAuthHelperStatus: () => invoke<AuthHelperStatus>('get_auth_helper_status'),
-  installAuthHelper: (enableTouchid: boolean) =>
-    invoke<AuthHelperStatus>('install_auth_helper', { enableTouchid }),
-  uninstallAuthHelper: (removeTouchid: boolean) =>
-    invoke<AuthHelperStatus>('uninstall_auth_helper', { removeTouchid }),
-}
-
-export type AuthHelperStatus = {
-  is_installed: boolean
-  touchid_enabled: boolean
 }
 
 export type ProcessInfo = { pid: number; command: string }

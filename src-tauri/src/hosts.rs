@@ -70,16 +70,22 @@ fn merge_block(current: &str, domains: &[String]) -> String {
 }
 
 fn write_with_privilege(content: &str) -> Result<()> {
-    // auth_helper가 설치된 경우 고정 경로에 스테이징 후 `sudo -n`으로 실행합니다.
-    // 설치되지 않은 경우 기존 osascript 프롬프트로 fallback합니다.
     let staging = std::path::Path::new(crate::auth_helper::HOSTS_STAGING_PATH);
     std::fs::write(staging, content)
         .with_context(|| format!("stage hosts at {}", staging.display()))?;
 
-    let result = if crate::auth_helper::status().is_installed {
+    // sudoers가 설치돼 있으면 프롬프트 없이 실행합니다.
+    // 아직 설치되지 않은 첫 실행이면, 실제 작업 + sudoers + pam_tid를
+    // 하나의 osascript 프롬프트로 처리합니다.
+    let result = if crate::auth_helper::is_installed() {
         run_sudo_cp(staging)
     } else {
-        run_osascript_cp(staging)
+        let cmd = format!(
+            "/bin/cp '{}' '{}'",
+            crate::auth_helper::HOSTS_STAGING_PATH,
+            HOSTS_PATH
+        );
+        crate::auth_helper::install_with_command(&cmd)
     };
 
     let _ = std::fs::remove_file(staging);
@@ -105,35 +111,6 @@ fn run_sudo_cp(staging: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_osascript_cp(src: &Path) -> Result<()> {
-    let src_str = src
-        .to_str()
-        .ok_or_else(|| anyhow!("temp path not valid UTF-8"))?;
-
-    if src_str.contains('"') || src_str.contains('\\') {
-        return Err(anyhow!("unexpected characters in temp path"));
-    }
-
-    let script = format!(
-        "do shell script \"/bin/cp '{}' '{}'\" with administrator privileges",
-        src_str, HOSTS_PATH
-    );
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .context("spawn osascript")?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        if err.contains("User canceled") || err.contains("-128") {
-            return Err(anyhow!("사용자가 관리자 권한 요청을 취소했습니다"));
-        }
-        return Err(anyhow!("osascript failed: {}", err));
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

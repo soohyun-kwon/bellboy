@@ -7,7 +7,6 @@ import {
   isPermissionRepairError,
 } from './api'
 import type {
-  AuthHelperStatus,
   CaddyHealth,
   CertificateTrustStatus,
   ForeignCaddyError,
@@ -32,7 +31,6 @@ type ForeignPrompt = {
 export default function App() {
   const [config, setConfig] = useState<Config>({ sites: [] })
   const [health, setHealth] = useState<CaddyHealth | null>(null)
-  const [authHelper, setAuthHelper] = useState<AuthHelperStatus | null>(null)
   const [editing, setEditing] = useState<Site | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -40,8 +38,6 @@ export default function App() {
   const [repairPrompt, setRepairPrompt] = useState<RepairPrompt | null>(null)
   const [trustPrompt, setTrustPrompt] = useState<TrustPrompt | null>(null)
   const [foreignPrompt, setForeignPrompt] = useState<ForeignPrompt | null>(null)
-  const [showAuthSetup, setShowAuthSetup] = useState(false)
-  const [authTouchId, setAuthTouchId] = useState(true)
   const [certificateTrust, setCertificateTrust] = useState<CertificateTrustStatus | null>(null)
 
   const isRunning = health?.is_running ?? false
@@ -69,16 +65,14 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, h, trust, auth] = await Promise.all([
+      const [c, h, trust] = await Promise.all([
         api.getConfig(),
         api.refreshHealth(),
         api.getCertificateTrustStatus(),
-        api.getAuthHelperStatus(),
       ])
       setConfig(c)
       setHealth(h)
       setCertificateTrust(trust)
-      setAuthHelper(auth)
     } catch (e) {
       setError(String(e))
     }
@@ -188,31 +182,6 @@ export default function App() {
     setError(null)
     try {
       setCertificateTrust(await api.trustCaddyCertificate())
-    } catch (e) {
-      setError(formatError(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleInstallAuthHelper = async () => {
-    setShowAuthSetup(false)
-    setBusy(true)
-    setError(null)
-    try {
-      setAuthHelper(await api.installAuthHelper(authTouchId))
-    } catch (e) {
-      setError(formatError(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleUninstallAuthHelper = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      setAuthHelper(await api.uninstallAuthHelper(authHelper?.touchid_enabled ?? false))
     } catch (e) {
       setError(formatError(e))
     } finally {
@@ -389,67 +358,6 @@ export default function App() {
               <button className="btn-ghost" onClick={() => setForeignPrompt(null)}>취소</button>
               <button className="btn-danger" onClick={handleConfirmKillForeign}>
                 {foreignPrompt.retryAfterKill ? '종료 후 시작' : '종료'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 관리자 권한 설정 footer */}
-      <footer className="auth-footer">
-        <div className="auth-footer-row">
-          <span className="auth-status">
-            <span className={`auth-dot ${authHelper?.is_installed ? 'installed' : 'not-installed'}`} />
-            {authHelper === null
-              ? '권한 설정 확인 중'
-              : authHelper.is_installed
-                ? `비밀번호 저장됨${authHelper.touchid_enabled ? ' · Touch ID 활성' : ''}`
-                : '매 시작마다 비밀번호 입력 필요'}
-          </span>
-          {authHelper?.is_installed ? (
-            <button className="btn-ghost small" onClick={handleUninstallAuthHelper} disabled={busy}>
-              해제
-            </button>
-          ) : (
-            <button className="btn-ghost small" onClick={() => setShowAuthSetup(true)} disabled={busy}>
-              한 번만 인증 설정
-            </button>
-          )}
-        </div>
-      </footer>
-
-      {/* Auth Helper 설치 다이얼로그 */}
-      {showAuthSetup && (
-        <div className="dialog-backdrop" onClick={() => setShowAuthSetup(false)}>
-          <div className="dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="dialog-header">
-              <h2>관리자 권한 저장</h2>
-            </div>
-            <div className="dialog-body">
-              <p>
-                지금 한 번만 비밀번호를 입력하면 이후 Perch를 껐다 켜도 다시 묻지 않습니다.
-              </p>
-              <p className="muted small">
-                <code>/etc/sudoers.d/perch</code>에 두 가지 명령만 NOPASSWD로 등록합니다:
-                hosts 동기화(<code>/bin/cp</code>)와 Caddy 소유권 복구(<code>/usr/sbin/chown</code>).
-                다른 sudo 명령에는 영향을 주지 않습니다.
-              </p>
-              <label className="auth-option">
-                <input
-                  type="checkbox"
-                  checked={authTouchId}
-                  onChange={(e) => setAuthTouchId(e.target.checked)}
-                />
-                <span>
-                  Touch ID로 sudo 인증 활성화
-                  <span className="muted small"> (macOS 13.3+, /etc/pam.d/sudo_local)</span>
-                </span>
-              </label>
-            </div>
-            <div className="dialog-footer">
-              <button className="btn-ghost" onClick={() => setShowAuthSetup(false)}>취소</button>
-              <button className="btn-primary" onClick={handleInstallAuthHelper}>
-                설정 (비밀번호 1회 입력)
               </button>
             </div>
           </div>

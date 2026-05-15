@@ -80,8 +80,7 @@ pub fn check() -> Result<(), PermissionIssue> {
 }
 
 /// Recursively chowns the Caddy data dir back to the current user.
-/// auth_helper가 설치된 경우 `sudo -n`으로 실행하고, 그렇지 않으면 osascript
-/// 프롬프트를 띄웁니다.
+/// sudoers가 설치된 경우 프롬프트 없이, 아니면 첫 실행 osascript와 함께 설치합니다.
 pub fn repair() -> Result<()> {
     let dir = caddy_data_dir()?;
     if !dir.exists() {
@@ -95,10 +94,15 @@ pub fn repair() -> Result<()> {
         .to_str()
         .ok_or_else(|| anyhow!("caddy dir path is not valid UTF-8"))?;
 
-    if crate::auth_helper::status().is_installed {
+    if crate::auth_helper::is_installed() {
         chown_sudo(&user, dir_str)
     } else {
-        chown_osascript(&user, dir_str)
+        // dir_str에 싱글쿼트나 이스케이프 문자가 없어야 안전합니다.
+        if dir_str.contains('\'') || dir_str.contains('\\') || dir_str.contains('"') {
+            return Err(anyhow!("unexpected characters in caddy dir path"));
+        }
+        let cmd = format!("/usr/sbin/chown -R {}:staff '{}'", user, dir_str);
+        crate::auth_helper::install_with_command(&cmd)
     }
 }
 
@@ -113,32 +117,6 @@ fn chown_sudo(user: &str, dir_str: &str) -> Result<()> {
             "sudo chown failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
-    }
-    Ok(())
-}
-
-fn chown_osascript(user: &str, dir_str: &str) -> Result<()> {
-    if dir_str.contains('\'') || dir_str.contains('\\') || dir_str.contains('"') {
-        return Err(anyhow!("unexpected characters in caddy dir path"));
-    }
-
-    let script = format!(
-        "do shell script \"/usr/sbin/chown -R {}:staff '{}'\" with administrator privileges",
-        user, dir_str
-    );
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .context("spawn osascript")?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        if err.contains("User canceled") || err.contains("-128") {
-            return Err(anyhow!("사용자가 관리자 권한 요청을 취소했습니다"));
-        }
-        return Err(anyhow!("osascript failed: {}", err));
     }
     Ok(())
 }

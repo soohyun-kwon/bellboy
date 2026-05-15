@@ -193,23 +193,6 @@ async fn repair_caddy_permissions() -> CmdResult<()> {
 }
 
 #[tauri::command]
-fn get_auth_helper_status() -> CmdResult<auth_helper::AuthHelperStatus> {
-    Ok(auth_helper::status())
-}
-
-#[tauri::command]
-async fn install_auth_helper(enable_touchid: bool) -> CmdResult<auth_helper::AuthHelperStatus> {
-    auth_helper::install(enable_touchid).map_err(err)?;
-    Ok(auth_helper::status())
-}
-
-#[tauri::command]
-async fn uninstall_auth_helper(remove_touchid: bool) -> CmdResult<auth_helper::AuthHelperStatus> {
-    auth_helper::uninstall(remove_touchid).map_err(err)?;
-    Ok(auth_helper::status())
-}
-
-#[tauri::command]
 fn refresh_health(state: State<'_, AppState>) -> CmdResult<CaddyHealth> {
     let caddyfile = config_store::caddyfile_path().map_err(err)?;
     let sighting = caddy_supervisor::inspect(state.caddy.current_pid(), &caddyfile);
@@ -288,9 +271,6 @@ pub fn run() {
             kill_foreign_caddy,
             get_certificate_trust_status,
             trust_caddy_certificate,
-            get_auth_helper_status,
-            install_auth_helper,
-            uninstall_auth_helper,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

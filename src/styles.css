@@ -480,62 +480,6 @@ button:disabled {
   margin-right: 4px;
 }
 
-/* Auth Helper footer */
-.auth-footer {
-  padding: 8px 20px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-elevated);
-}
-.auth-footer-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.auth-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.auth-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.auth-dot.installed {
-  background: var(--success);
-}
-.auth-dot.not-installed {
-  background: var(--border-strong);
-}
-.btn-ghost.small {
-  font-size: 12px;
-  padding: 3px 8px;
-}
-
-/* Auth helper setup dialog */
-.auth-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.auth-option input[type='checkbox'] {
-  margin-top: 2px;
-  flex-shrink: 0;
-  accent-color: var(--primary);
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-}
-.auth-option span {
-  line-height: 1.5;
-}
-
 /* Refresh spin animation */
 .spin {
   display: inline-block;

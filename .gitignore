@@ -1,0 +1,27 @@
+# deps
+node_modules
+.pnp.*
+
+# build
+dist
+dist-ssr
+*.local
+vite.config.ts.timestamp-*
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# os
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# tauri
+src-tauri/target
+src-tauri/gen

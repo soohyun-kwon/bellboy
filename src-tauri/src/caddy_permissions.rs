@@ -1,0 +1,185 @@
+//! Pre-flight permission check + in-app repair for Caddy's data directory.
+//!
+//! Why this exists: Caddy keeps its internal CA and autocert state under
+//! `~/Library/Application Support/Caddy`. If the user (or a prior tool) ever
+//! ran `sudo caddy ...`, that directory ends up root-owned and a subsequent
+//! user-mode run fails with `permission denied` on the root cert.
+//!
+//! Rather than making the user open a terminal and type `chown`, we detect
+//! the condition up-front and offer to repair it via `osascript` — same
+//! pattern `hosts.rs` uses to get one admin-prompt and be done with it.
+
+use anyhow::{anyhow, Context, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const CADDY_DIR: &str = "Library/Application Support/Caddy";
+const PROBE_FILENAME: &str = ".perch-write-probe";
+const ROOT_CRT_REL: &str = "pki/authorities/local/root.crt";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionIssue {
+    /// A file inside the PKI tree exists but we can't read it. Almost always
+    /// means it's owned by root from a previous `sudo caddy` invocation.
+    PkiNotReadable { path: PathBuf },
+    /// The data directory itself can't accept writes.
+    DirNotWritable { path: PathBuf },
+}
+
+impl PermissionIssue {
+    pub fn message(&self) -> String {
+        match self {
+            PermissionIssue::PkiNotReadable { .. } => {
+                "Caddy 내부 인증서 파일을 읽을 수 없습니다. 이전에 sudo로 실행된 흔적이라 소유권 복구가 필요합니다.".into()
+            }
+            PermissionIssue::DirNotWritable { .. } => {
+                "Caddy 데이터 폴더에 쓰기 권한이 없습니다. 소유권 복구가 필요합니다.".into()
+            }
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            PermissionIssue::PkiNotReadable { path } => path,
+            PermissionIssue::DirNotWritable { path } => path,
+        }
+    }
+}
+
+fn caddy_data_dir() -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME not set")?;
+    Ok(PathBuf::from(home).join(CADDY_DIR))
+}
+
+/// Returns `Ok(())` if Caddy can safely read/write its data dir.
+/// Returns `Err(PermissionIssue)` for the specific repairable cases.
+/// Unexpected IO failures bubble up as `Ok(())` — we'd rather let Caddy surface
+/// them than block startup on a false positive.
+pub fn check() -> Result<(), PermissionIssue> {
+    let Ok(dir) = caddy_data_dir() else {
+        return Ok(());
+    };
+    if !dir.exists() {
+        // Caddy will create it on first run.
+        return Ok(());
+    }
+
+    let root_crt = dir.join(ROOT_CRT_REL);
+    if root_crt.exists() && std::fs::File::open(&root_crt).is_err() {
+        return Err(PermissionIssue::PkiNotReadable { path: root_crt });
+    }
+
+    let probe = dir.join(PROBE_FILENAME);
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err(PermissionIssue::DirNotWritable { path: dir }),
+    }
+}
+
+/// Recursively chowns the Caddy data dir back to the current user.
+/// auth_helper가 설치된 경우 `sudo -n`으로 실행하고, 그렇지 않으면 osascript
+/// 프롬프트를 띄웁니다.
+pub fn repair() -> Result<()> {
+    let dir = caddy_data_dir()?;
+    if !dir.exists() {
+        return Ok(());
+    }
+    let user = std::env::var("USER").context("USER not set")?;
+    if !is_safe_user(&user) {
+        return Err(anyhow!("unexpected characters in USER"));
+    }
+    let dir_str = dir
+        .to_str()
+        .ok_or_else(|| anyhow!("caddy dir path is not valid UTF-8"))?;
+
+    if crate::auth_helper::status().is_installed {
+        chown_sudo(&user, dir_str)
+    } else {
+        chown_osascript(&user, dir_str)
+    }
+}
+
+fn chown_sudo(user: &str, dir_str: &str) -> Result<()> {
+    let owner_arg = format!("{}:staff", user);
+    let output = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/sbin/chown", "-R", &owner_arg, dir_str])
+        .output()
+        .context("spawn sudo")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "sudo chown failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn chown_osascript(user: &str, dir_str: &str) -> Result<()> {
+    if dir_str.contains('\'') || dir_str.contains('\\') || dir_str.contains('"') {
+        return Err(anyhow!("unexpected characters in caddy dir path"));
+    }
+
+    let script = format!(
+        "do shell script \"/usr/sbin/chown -R {}:staff '{}'\" with administrator privileges",
+        user, dir_str
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .context("spawn osascript")?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        if err.contains("User canceled") || err.contains("-128") {
+            return Err(anyhow!("사용자가 관리자 권한 요청을 취소했습니다"));
+        }
+        return Err(anyhow!("osascript failed: {}", err));
+    }
+    Ok(())
+}
+
+fn is_safe_user(user: &str) -> bool {
+    !user.is_empty()
+        && user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_user_accepts_typical_names() {
+        assert!(is_safe_user("gwonsuhyeon"));
+        assert!(is_safe_user("soo-hyun"));
+        assert!(is_safe_user("user.name"));
+        assert!(is_safe_user("user_1"));
+    }
+
+    #[test]
+    fn safe_user_rejects_shell_metachars() {
+        assert!(!is_safe_user(""));
+        assert!(!is_safe_user("user; rm -rf /"));
+        assert!(!is_safe_user("user'"));
+        assert!(!is_safe_user("user space"));
+        assert!(!is_safe_user("user$HOME"));
+    }
+
+    #[test]
+    fn issue_message_and_path_accessors() {
+        let p = PathBuf::from("/tmp/x");
+        let issue = PermissionIssue::PkiNotReadable { path: p.clone() };
+        assert_eq!(issue.path(), p.as_path());
+        assert!(!issue.message().is_empty());
+
+        let issue = PermissionIssue::DirNotWritable { path: p.clone() };
+        assert_eq!(issue.path(), p.as_path());
+        assert!(!issue.message().is_empty());
+    }
+}

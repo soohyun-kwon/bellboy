@@ -6,9 +6,8 @@
 //! admin-privilege prompt. Future: move to an SMAppService helper so we don't
 //! prompt on every write.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
 
 const HOSTS_PATH: &str = "/etc/hosts";
 const MARKER_START: &str = "# >>> perch managed (do not edit between markers)";
@@ -70,45 +69,20 @@ fn merge_block(current: &str, domains: &[String]) -> String {
 }
 
 fn write_with_privilege(content: &str) -> Result<()> {
+    use crate::auth_helper::{Operation, is_installed, install_and_run, run};
+
     let staging = std::path::Path::new(crate::auth_helper::HOSTS_STAGING_PATH);
     std::fs::write(staging, content)
         .with_context(|| format!("stage hosts at {}", staging.display()))?;
 
-    // sudoers가 설치돼 있으면 프롬프트 없이 실행합니다.
-    // 아직 설치되지 않은 첫 실행이면, 실제 작업 + sudoers + pam_tid를
-    // 하나의 osascript 프롬프트로 처리합니다.
-    let result = if crate::auth_helper::is_installed() {
-        run_sudo_cp(staging)
+    let result = if is_installed() {
+        run(Operation::SyncHosts)
     } else {
-        let cmd = format!(
-            "/bin/cp '{}' '{}'",
-            crate::auth_helper::HOSTS_STAGING_PATH,
-            HOSTS_PATH
-        );
-        crate::auth_helper::install_with_command(&cmd)
+        install_and_run(Operation::SyncHosts)
     };
 
     let _ = std::fs::remove_file(staging);
     result
-}
-
-/// `sudo -n /bin/cp`로 비밀번호 없이 실행합니다. sudoers 규칙이 없으면 즉시 실패해
-/// 호출자가 osascript fallback을 시도합니다.
-fn run_sudo_cp(staging: &Path) -> Result<()> {
-    let staging_str = staging
-        .to_str()
-        .ok_or_else(|| anyhow!("staging path not valid UTF-8"))?;
-    let output = Command::new("/usr/bin/sudo")
-        .args(["-n", "/bin/cp", staging_str, HOSTS_PATH])
-        .output()
-        .context("spawn sudo")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "sudo cp failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(())
 }
 
 

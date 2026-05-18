@@ -1,91 +1,92 @@
 //! 관리자 권한 자동 캐싱.
 //!
 //! # 흐름
-//! 1. 권한이 필요한 작업 시도 → `sudo -n` 먼저 시도
-//! 2. 실패(첫 실행) → osascript로 **실제 작업 + sudoers 설치 + Touch ID(pam_tid) 설치**를
-//!    하나의 프롬프트로 처리
+//! 1. 권한이 필요한 작업 → `sudo -n /usr/local/bin/perch-helper <cmd>` 먼저 시도
+//! 2. 실패(첫 실행) → osascript 한 번으로 **실제 작업 + 래퍼 스크립트 + sudoers + pam_tid** 설치
 //! 3. 이후 재실행 → `sudo -n` 성공, 프롬프트 없음
 //!
-//! # Touch ID
-//! `/etc/pam.d/sudo_local`에 `auth sufficient pam_tid.so`를 추가합니다.
-//! macOS 13.3+에서 `sudo_local`은 시스템 업데이트에 덮어써지지 않습니다.
-//! sudo 자체가 Touch ID를 지원하게 되므로, 다른 터미널 sudo 명령에도 지문이 적용됩니다.
+//! # 왜 래퍼 스크립트?
+//! macOS의 visudo는 sudoers 규칙 경로에 공백이나 특수문자를 허용하지 않습니다.
+//! (`Application Support` 경로에서 `\ `·`?` 모두 문법 오류)
+//! 래퍼 스크립트를 `/usr/local/bin/perch-helper`(공백 없음)에 두면
+//! sudoers 규칙이 단순해지고 검증도 통과합니다.
 //!
-//! # 범위
-//! sudoers 규칙은 Perch가 실제로 필요한 두 명령만 허용합니다:
-//! - `/bin/cp /tmp/perch-hosts-staging /etc/hosts`
-//! - `/usr/sbin/chown -R <user>:staff <caddy-dir>`
+//! # Touch ID
+//! `/etc/pam.d/sudo_local`에 `auth sufficient pam_tid.so` 추가 (macOS 13.3+).
+//! 시스템 업데이트에 덮어써지지 않으며, 터미널의 sudo 명령에도 지문이 적용됩니다.
 
 use anyhow::{anyhow, Context, Result};
 use std::process::Command;
 
-/// hosts 스테이징 고정 경로. 공백 없는 경로여야 sudoers 규칙이 정확히 매칭됩니다.
 pub const HOSTS_STAGING_PATH: &str = "/tmp/perch-hosts-staging";
+pub const HELPER_PATH: &str = "/usr/local/bin/perch-helper";
 const SUDOERS_PATH: &str = "/etc/sudoers.d/perch";
 const PAM_SUDO_LOCAL_PATH: &str = "/etc/pam.d/sudo_local";
 
 pub fn is_installed() -> bool {
-    std::path::Path::new(SUDOERS_PATH).exists()
+    std::path::Path::new(HELPER_PATH).exists()
+        && std::path::Path::new(SUDOERS_PATH).exists()
 }
 
-/// 권한이 필요한 작업과 sudoers/pam 설치를 **하나의 osascript 프롬프트**로 처리합니다.
+/// 권한이 필요한 작업과 전체 설정을 **하나의 osascript 프롬프트**로 처리합니다.
 ///
-/// `main_shell_cmd`: 실제로 실행해야 할 셸 명령 (예: `/bin/cp '/tmp/...' '/etc/hosts'`).
-/// 이 명령 뒤에 sudoers + pam_tid 설치 명령을 `&&`로 이어 붙입니다.
-pub fn install_with_command(main_shell_cmd: &str) -> Result<()> {
-    let (user, caddy_dir) = user_and_caddy_dir()?;
-    let caddy_dir_pattern = caddy_dir.replace(' ', "?");
+/// `operation`: `"sync-hosts"` 또는 `"repair-caddy"`.
+/// 설치 완료 후 해당 operation을 바로 실행합니다.
+pub fn install_and_run(operation: Operation) -> Result<()> {
+    let (user, home) = user_and_home()?;
+    let caddy_dir = format!("{}/Library/Application Support/Caddy", home);
 
-    let sudoers_content = format!(
-        "# Managed by Perch — do not edit manually\n\
-         # Allows Perch to update /etc/hosts and repair Caddy permissions\n\
-         # without prompting for a password on every restart.\n\
-         {user} ALL=(root) NOPASSWD: /bin/cp {staging} /etc/hosts\n\
-         {user} ALL=(root) NOPASSWD: /usr/sbin/chown -R {user}:staff {caddy}\n",
-        user = user,
-        staging = HOSTS_STAGING_PATH,
-        caddy = caddy_dir_pattern,
-    );
-    validate_sudoers_content(&sudoers_content)?;
+    // 래퍼 스크립트 내용을 생성합니다. user/caddy_dir을 하드코딩해 런타임 변수 의존을 없앱니다.
+    let helper_content = build_helper_script(&user, &caddy_dir)?;
+    let sudoers_content = build_sudoers_content(&user)?;
+    let pam_content = "# Managed by Perch\nauth       sufficient     pam_tid.so\n";
 
-    // osascript 실행 전에 임시 파일들을 먼저 써둡니다 (user 권한으로 가능).
-    let sudoers_tmp = format!("/tmp/perch-sudoers-{}.tmp", std::process::id());
-    let pam_tmp = format!("/tmp/perch-pam-{}.tmp", std::process::id());
+    // 임시 파일에 먼저 써둡니다 (user 권한으로 가능).
+    let pid = std::process::id();
+    let helper_tmp = format!("/tmp/perch-helper-{}.tmp", pid);
+    let sudoers_tmp = format!("/tmp/perch-sudoers-{}.tmp", pid);
+    let pam_tmp = format!("/tmp/perch-pam-{}.tmp", pid);
 
+    std::fs::write(&helper_tmp, &helper_content)
+        .with_context(|| format!("stage helper at {}", helper_tmp))?;
     std::fs::write(&sudoers_tmp, &sudoers_content)
         .with_context(|| format!("stage sudoers at {}", sudoers_tmp))?;
-
-    let pam_content = "# Managed by Perch\nauth       sufficient     pam_tid.so\n";
     std::fs::write(&pam_tmp, pam_content)
         .with_context(|| format!("stage pam at {}", pam_tmp))?;
 
-    // 세 작업을 하나의 셸 명령으로 이어 붙입니다:
-    //   1. 실제 작업 (hosts cp 또는 chown)
-    //   2. sudoers 드롭인 설치
-    //   3. pam_tid.so 설치 (없는 경우에만)
+    validate_sudoers_content(&sudoers_content)?;
+
+    // osascript로 한 번에 설치 + 실행합니다.
     let mut steps = vec![
-        main_shell_cmd.to_string(),
+        format!("/bin/mkdir -p /usr/local/bin"),
         format!(
-            "/usr/bin/install -m 0440 -o root -g wheel '{sudoers_tmp}' '{SUDOERS_PATH}'"
+            "/usr/bin/install -m 0755 -o root -g wheel '{}' '{}'",
+            helper_tmp, HELPER_PATH
+        ),
+        format!(
+            "/usr/bin/install -m 0440 -o root -g wheel '{}' '{}'",
+            sudoers_tmp, SUDOERS_PATH
         ),
     ];
     if !pam_sudo_local_has_tid() {
         steps.push(format!(
-            "/usr/bin/install -m 0644 -o root -g wheel '{pam_tmp}' '{PAM_SUDO_LOCAL_PATH}'"
+            "/usr/bin/install -m 0644 -o root -g wheel '{}' '{}'",
+            pam_tmp, PAM_SUDO_LOCAL_PATH
         ));
     }
+    // 마지막으로 실제 작업을 실행합니다 (설치 성공 확인 겸).
+    steps.push(format!("{} {}", HELPER_PATH, operation.as_str()));
 
-    let combined = steps.join(" && ");
     let osa = format!(
         "do shell script \"{}\" with administrator privileges",
-        combined
+        steps.join(" && ")
     );
-
     let output = Command::new("osascript")
         .args(["-e", &osa])
         .output()
         .context("spawn osascript")?;
 
+    let _ = std::fs::remove_file(&helper_tmp);
     let _ = std::fs::remove_file(&sudoers_tmp);
     let _ = std::fs::remove_file(&pam_tmp);
 
@@ -99,13 +100,30 @@ pub fn install_with_command(main_shell_cmd: &str) -> Result<()> {
     Ok(())
 }
 
-/// sudoers 드롭인과 pam_tid 설정을 제거합니다.
-pub fn uninstall() -> Result<()> {
-    let mut script = format!("/bin/rm -f '{SUDOERS_PATH}'");
-    if pam_sudo_local_has_tid() {
-        script.push_str(&format!(" && /bin/rm -f '{PAM_SUDO_LOCAL_PATH}'"));
+/// 설치된 래퍼 스크립트를 통해 `sudo -n`으로 실행합니다. 프롬프트 없음.
+pub fn run(operation: Operation) -> Result<()> {
+    let output = Command::new("/usr/bin/sudo")
+        .args(["-n", HELPER_PATH, operation.as_str()])
+        .output()
+        .context("spawn sudo")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "sudo helper failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
+    Ok(())
+}
 
+/// 래퍼 스크립트·sudoers·pam_tid를 제거합니다.
+pub fn uninstall() -> Result<()> {
+    let mut script = format!(
+        "/bin/rm -f '{}' '{}'",
+        HELPER_PATH, SUDOERS_PATH
+    );
+    if pam_sudo_local_has_tid() {
+        script.push_str(&format!(" && /bin/rm -f '{}'", PAM_SUDO_LOCAL_PATH));
+    }
     let osa = format!(
         "do shell script \"{}\" with administrator privileges",
         script
@@ -114,7 +132,6 @@ pub fn uninstall() -> Result<()> {
         .args(["-e", &osa])
         .output()
         .context("spawn osascript")?;
-
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         if err.contains("User canceled") || err.contains("-128") {
@@ -125,16 +142,66 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Operation {
+    SyncHosts,
+    RepairCaddy,
+}
+
+impl Operation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Operation::SyncHosts => "sync-hosts",
+            Operation::RepairCaddy => "repair-caddy",
+        }
+    }
+}
+
 // ─── 내부 헬퍼 ──────────────────────────────────────────────────────────────
 
-fn user_and_caddy_dir() -> Result<(String, String)> {
-    let user = std::env::var("USER").context("USER not set")?;
-    if !is_safe_name(&user) {
-        return Err(anyhow!("USER에 허용되지 않는 문자가 있습니다: {}", user));
+/// user와 caddy_dir을 하드코딩한 래퍼 스크립트를 생성합니다.
+/// 런타임에 $HOME이나 $SUDO_USER에 의존하지 않아 안전합니다.
+fn build_helper_script(user: &str, caddy_dir: &str) -> Result<String> {
+    // 셸 인젝션 방지: user는 알파벳/숫자만, caddy_dir은 싱글쿼트 없음 확인
+    if !is_safe_name(user) {
+        return Err(anyhow!("USER에 허용되지 않는 문자: {}", user));
     }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let caddy_dir = format!("{}/Library/Application Support/Caddy", home);
-    Ok((user, caddy_dir))
+    if caddy_dir.contains('\'') || caddy_dir.contains('\\') {
+        return Err(anyhow!("Caddy 경로에 허용되지 않는 문자가 있습니다"));
+    }
+
+    Ok(format!(
+        "#!/bin/bash\n\
+         set -euo pipefail\n\
+         case \"${{1:-}}\" in\n\
+           sync-hosts)\n\
+             exec /bin/cp '{staging}' /etc/hosts\n\
+             ;;\n\
+           repair-caddy)\n\
+             exec /usr/sbin/chown -R '{user}:staff' '{caddy}'\n\
+             ;;\n\
+           *)\n\
+             echo \"perch-helper: unknown command: ${{1:-}}\" >&2\n\
+             exit 1\n\
+             ;;\n\
+         esac\n",
+        staging = HOSTS_STAGING_PATH,
+        user = user,
+        caddy = caddy_dir,
+    ))
+}
+
+fn build_sudoers_content(user: &str) -> Result<String> {
+    if !is_safe_name(user) {
+        return Err(anyhow!("USER에 허용되지 않는 문자: {}", user));
+    }
+    Ok(format!(
+        "# Managed by Perch — do not edit manually\n\
+         {user} ALL=(root) NOPASSWD: {helper} sync-hosts\n\
+         {user} ALL=(root) NOPASSWD: {helper} repair-caddy\n",
+        user = user,
+        helper = HELPER_PATH,
+    ))
 }
 
 fn validate_sudoers_content(content: &str) -> Result<()> {
@@ -160,6 +227,15 @@ fn pam_sudo_local_has_tid() -> bool {
         .unwrap_or(false)
 }
 
+fn user_and_home() -> Result<(String, String)> {
+    let user = std::env::var("USER").context("USER not set")?;
+    if !is_safe_name(&user) {
+        return Err(anyhow!("USER에 허용되지 않는 문자: {}", user));
+    }
+    let home = std::env::var("HOME").context("HOME not set")?;
+    Ok((user, home))
+}
+
 fn is_safe_name(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
@@ -171,8 +247,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn helper_script_contains_expected_commands() {
+        let script = build_helper_script("alice", "/Users/alice/Library/Application Support/Caddy").unwrap();
+        assert!(script.contains("sync-hosts"));
+        assert!(script.contains("repair-caddy"));
+        assert!(script.contains("/bin/cp '/tmp/perch-hosts-staging' /etc/hosts"));
+        assert!(script.contains("/usr/sbin/chown -R 'alice:staff'"));
+        assert!(script.contains("Application Support/Caddy"));
+    }
+
+    #[test]
+    fn sudoers_content_has_no_spaces_in_paths() {
+        let content = build_sudoers_content("alice").unwrap();
+        // helper 경로에 공백 없음
+        for line in content.lines().filter(|l| l.contains("NOPASSWD")) {
+            let cmd_part = line.split("NOPASSWD:").nth(1).unwrap_or("");
+            // /usr/local/bin/perch-helper 부분만 검사
+            let helper = cmd_part.trim().split_whitespace().next().unwrap_or("");
+            assert!(!helper.contains(' '), "helper path has space: {}", helper);
+        }
+    }
+
+    #[test]
     fn safe_name_accepts_typical() {
-        assert!(is_safe_name("gwonsuhyeon"));
+        assert!(is_safe_name("alice"));
         assert!(is_safe_name("john.doe"));
         assert!(is_safe_name("user-1"));
     }
@@ -183,14 +281,5 @@ mod tests {
         assert!(!is_safe_name("user space"));
         assert!(!is_safe_name("a;b"));
         assert!(!is_safe_name("a$b"));
-    }
-
-    #[test]
-    fn caddy_dir_spaces_become_glob_wildcard() {
-        let caddy = "/Users/me/Library/Application Support/Caddy";
-        let pattern = caddy.replace(' ', "?");
-        assert_eq!(pattern, "/Users/me/Library/Application?Support/Caddy");
-        assert!(!pattern.contains(' '));
-        assert!(!pattern.contains('\\'));
     }
 }

@@ -11,7 +11,6 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const CADDY_DIR: &str = "Library/Application Support/Caddy";
 const PROBE_FILENAME: &str = ".perch-write-probe";
@@ -82,43 +81,18 @@ pub fn check() -> Result<(), PermissionIssue> {
 /// Recursively chowns the Caddy data dir back to the current user.
 /// sudoers가 설치된 경우 프롬프트 없이, 아니면 첫 실행 osascript와 함께 설치합니다.
 pub fn repair() -> Result<()> {
+    use crate::auth_helper::{Operation, is_installed, install_and_run, run};
+
     let dir = caddy_data_dir()?;
     if !dir.exists() {
         return Ok(());
     }
-    let user = std::env::var("USER").context("USER not set")?;
-    if !is_safe_user(&user) {
-        return Err(anyhow!("unexpected characters in USER"));
-    }
-    let dir_str = dir
-        .to_str()
-        .ok_or_else(|| anyhow!("caddy dir path is not valid UTF-8"))?;
 
-    if crate::auth_helper::is_installed() {
-        chown_sudo(&user, dir_str)
+    if is_installed() {
+        run(Operation::RepairCaddy)
     } else {
-        // dir_str에 싱글쿼트나 이스케이프 문자가 없어야 안전합니다.
-        if dir_str.contains('\'') || dir_str.contains('\\') || dir_str.contains('"') {
-            return Err(anyhow!("unexpected characters in caddy dir path"));
-        }
-        let cmd = format!("/usr/sbin/chown -R {}:staff '{}'", user, dir_str);
-        crate::auth_helper::install_with_command(&cmd)
+        install_and_run(Operation::RepairCaddy)
     }
-}
-
-fn chown_sudo(user: &str, dir_str: &str) -> Result<()> {
-    let owner_arg = format!("{}:staff", user);
-    let output = Command::new("/usr/bin/sudo")
-        .args(["-n", "/usr/sbin/chown", "-R", &owner_arg, dir_str])
-        .output()
-        .context("spawn sudo")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "sudo chown failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(())
 }
 
 fn is_safe_user(user: &str) -> bool {

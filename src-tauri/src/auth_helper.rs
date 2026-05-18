@@ -56,23 +56,15 @@ pub fn install_and_run(operation: Operation) -> Result<()> {
 
     validate_sudoers_content(&sudoers_content)?;
 
-    // osascript로 한 번에 설치 + 실행합니다.
+    // osascript 샌드박스에서 `/usr/bin/install`은 임시 파일 생성이 막혀 실패합니다.
+    // cp + chmod + chown 으로 동일한 결과를 얻습니다.
     let mut steps = vec![
-        format!("/bin/mkdir -p /usr/local/bin"),
-        format!(
-            "/usr/bin/install -m 0755 -o root -g wheel '{}' '{}'",
-            helper_tmp, HELPER_PATH
-        ),
-        format!(
-            "/usr/bin/install -m 0440 -o root -g wheel '{}' '{}'",
-            sudoers_tmp, SUDOERS_PATH
-        ),
+        "/bin/mkdir -p /usr/local/bin".to_string(),
+        install_file(&helper_tmp, HELPER_PATH, "0755"),
+        install_file(&sudoers_tmp, SUDOERS_PATH, "0440"),
     ];
     if !pam_sudo_local_has_tid() {
-        steps.push(format!(
-            "/usr/bin/install -m 0644 -o root -g wheel '{}' '{}'",
-            pam_tmp, PAM_SUDO_LOCAL_PATH
-        ));
+        steps.push(install_file(&pam_tmp, PAM_SUDO_LOCAL_PATH, "0644"));
     }
     // 마지막으로 실제 작업을 실행합니다 (설치 성공 확인 겸).
     steps.push(format!("{} {}", HELPER_PATH, operation.as_str()));
@@ -219,6 +211,15 @@ fn validate_sudoers_content(content: &str) -> Result<()> {
         )),
         Err(e) => Err(anyhow!("visudo 실행 실패: {}", e)),
     }
+}
+
+/// `cp src dst && chmod mode dst && chown root:wheel dst` 명령 문자열을 반환합니다.
+/// `/usr/bin/install` 대신 사용 — install은 osascript 샌드박스에서 임시 파일 생성이
+/// 막혀 "Operation not permitted" 오류를 냅니다.
+fn install_file(src: &str, dst: &str, mode: &str) -> String {
+    format!(
+        "/bin/cp '{src}' '{dst}' && /bin/chmod {mode} '{dst}' && /usr/sbin/chown root:wheel '{dst}'"
+    )
 }
 
 fn pam_sudo_local_has_tid() -> bool {

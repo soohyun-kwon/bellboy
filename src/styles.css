@@ -579,6 +579,42 @@ button:disabled {
   border-color: var(--primary);
 }
 
+/* Settings footer */
+.settings-footer {
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  background: var(--bg-elevated);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.settings-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.settings-hint code {
+  font-family: ui-monospace, SFMono-Regular, 'Cascadia Mono', monospace;
+  font-size: 10px;
+  background: var(--border);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 /* Refresh spin animation */
 .spin {
   display: inline-block;

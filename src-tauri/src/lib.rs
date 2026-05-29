@@ -7,6 +7,7 @@ mod config_store;
 mod dns;
 mod hosts;
 mod model;
+mod node_env;
 mod system_trust;
 
 use caddy_process::CaddyState;
@@ -168,6 +169,15 @@ async fn start_caddy(state: State<'_, AppState>) -> Result<(), StartError> {
     // bind, TLS provisioning, etc.). Give it a beat, then surface the log tail
     // so the user isn't left staring at a silent "stopped" UI.
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+    // Caddy may have (re)generated its local CA. Rebuild the bundle so
+    // NODE_EXTRA_CA_CERTS stays up to date for new Node processes.
+    if node_env::is_enabled() {
+        if let Err(e) = node_env::rebuild_bundle() {
+            eprintln!("[perch] ca-bundle rebuild failed: {e}");
+        }
+    }
+
     if !state.caddy.is_running() {
         let detail = caddy_process::recent_failure_summary().unwrap_or_default();
         let message = if detail.is_empty() {
@@ -212,6 +222,20 @@ async fn kill_foreign_caddy(pids: Vec<u32>) -> CmdResult<()> {
     // Give the kernel a moment to release the sockets before any follow-up start.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     Ok(())
+}
+
+#[tauri::command]
+fn get_node_extra_ca_certs() -> bool {
+    node_env::is_enabled()
+}
+
+#[tauri::command]
+async fn set_node_extra_ca_certs(enabled: bool) -> CmdResult<()> {
+    if enabled {
+        node_env::enable().map_err(err)
+    } else {
+        node_env::disable().map_err(err)
+    }
 }
 
 #[tauri::command]
@@ -269,6 +293,8 @@ pub fn run() {
             repair_caddy_permissions,
             refresh_health,
             kill_foreign_caddy,
+            get_node_extra_ca_certs,
+            set_node_extra_ca_certs,
             get_certificate_trust_status,
             trust_caddy_certificate,
         ])

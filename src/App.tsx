@@ -39,6 +39,7 @@ export default function App() {
   const [trustPrompt, setTrustPrompt] = useState<TrustPrompt | null>(null)
   const [foreignPrompt, setForeignPrompt] = useState<ForeignPrompt | null>(null)
   const [certificateTrust, setCertificateTrust] = useState<CertificateTrustStatus | null>(null)
+  const [nodeExtraCaCerts, setNodeExtraCaCerts] = useState(false)
 
   const isRunning = health?.is_running ?? false
   const level = healthLevel(health)
@@ -65,14 +66,16 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, h, trust] = await Promise.all([
+      const [c, h, trust, nodeTls] = await Promise.all([
         api.getConfig(),
         api.refreshHealth(),
         api.getCertificateTrustStatus(),
+        api.getNodeExtraCaCerts(),
       ])
       setConfig(c)
       setHealth(h)
       setCertificateTrust(trust)
+      setNodeExtraCaCerts(nodeTls)
     } catch (e) {
       setError(String(e))
     }
@@ -218,6 +221,19 @@ export default function App() {
     await applyConfig({ ...config, sites })
   }
 
+  const handleToggleNodeTls = async (enabled: boolean) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.setNodeExtraCaCerts(enabled)
+      setNodeExtraCaCerts(enabled)
+    } catch (e) {
+      setError(formatError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const applyConfig = async (next: Config) => {
     setBusy(true)
     setError(null)
@@ -292,6 +308,28 @@ export default function App() {
           </div>
         )}
       </main>
+
+      <footer className="settings-footer">
+        <div className="settings-row">
+          <div className="settings-info">
+            <span className="settings-label">Node.js TLS 인증서 자동 설정</span>
+            <span className="settings-hint">
+              <code>NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem</code>을 세션 환경 변수로 등록합니다.
+              Node.js 프록시의 간헐적 인증서 오류(<code>UNABLE_TO_GET_ISSUER_CERT_LOCALLY</code>)를 방지합니다.
+              새 터미널부터 적용됩니다.
+            </span>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={nodeExtraCaCerts}
+              disabled={busy}
+              onChange={(e) => handleToggleNodeTls(e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+      </footer>
 
       {config.sites.length > 0 && (
         <button className="fab" onClick={() => setEditing(emptySite())} aria-label="사이트 추가">

@@ -15,6 +15,9 @@ export const api = {
     invoke<CertificateTrustStatus>('get_certificate_trust_status'),
   trustCaddyCertificate: () =>
     invoke<CertificateTrustStatus>('trust_caddy_certificate'),
+  getNodeExtraCaCerts: () => invoke<boolean>('get_node_extra_ca_certs'),
+  setNodeExtraCaCerts: (enabled: boolean) =>
+    invoke<void>('set_node_extra_ca_certs', { enabled }),
 }
 
 export type ProcessInfo = { pid: number; command: string }

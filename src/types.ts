@@ -1,5 +1,7 @@
+export type ProxyEnvPreset = { name: string; target: string }
+
 export type Rule =
-  | { kind: 'proxy'; path: string; target: string }
+  | { kind: 'proxy'; path: string; target: string; envs?: ProxyEnvPreset[] }
   | { kind: 'static'; path: string; root: string }
   | { kind: 'bypass'; path: string }
 

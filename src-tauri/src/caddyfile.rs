@@ -74,7 +74,7 @@ fn render_rule(
     resolved: &HashMap<String, Option<String>>,
 ) {
     match rule {
-        Rule::Proxy { path, target } => render_proxy(out, path, target, managed, resolved),
+        Rule::Proxy { path, target, .. } => render_proxy(out, path, target, managed, resolved),
         Rule::Static { path, root } => {
             let _ = writeln!(out, "\thandle {} {{", path);
             let _ = writeln!(out, "\t\troot * {}", root);

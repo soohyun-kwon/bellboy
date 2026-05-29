@@ -207,6 +207,17 @@ export default function App() {
     await applyConfig({ ...config, sites })
   }
 
+  const handleSwitchRuleEnv = async (siteId: string, ruleIndex: number, target: string) => {
+    const sites = config.sites.map((s) => {
+      if (s.id !== siteId) return s
+      const rules = s.rules.map((r, i) =>
+        i === ruleIndex && r.kind === 'proxy' ? { ...r, target } : r
+      )
+      return { ...s, rules }
+    })
+    await applyConfig({ ...config, sites })
+  }
+
   const applyConfig = async (next: Config) => {
     setBusy(true)
     setError(null)
@@ -275,6 +286,7 @@ export default function App() {
                 onEdit={() => setEditing(site)}
                 onDelete={() => handleDeleteSite(site.id)}
                 onToggle={(enabled) => handleToggleSite(site.id, enabled)}
+                onSwitchRuleEnv={(ruleIndex, target) => handleSwitchRuleEnv(site.id, ruleIndex, target)}
               />
             ))}
           </div>

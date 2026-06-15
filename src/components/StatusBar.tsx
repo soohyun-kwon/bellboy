@@ -10,6 +10,8 @@ type Props = {
   refreshing: boolean
   certificateTrust: CertificateTrustStatus | null
   onTrustCertificate: () => void
+  /** Caddy 미설치 등으로 시작/중지 토글을 막아야 할 때 true. */
+  toggleDisabled?: boolean
 }
 
 export function StatusBar({
@@ -22,6 +24,7 @@ export function StatusBar({
   refreshing,
   certificateTrust,
   onTrustCertificate,
+  toggleDisabled = false,
 }: Props) {
   const certificateLabel = certificateTrust
     ? certificateTrustLabel(certificateTrust.state)
@@ -32,7 +35,7 @@ export function StatusBar({
     <header className="statusbar">
       <div className="brand">
         <span className="brand-dot" />
-        <span className="brand-name">Perch</span>
+        <span className="brand-name">Bellboy</span>
       </div>
       <div className="status">
         <span
@@ -63,7 +66,8 @@ export function StatusBar({
         <button
           className={isRunning ? 'btn-danger' : 'btn-primary'}
           onClick={onToggle}
-          disabled={busy}
+          disabled={busy || toggleDisabled}
+          title={toggleDisabled ? 'Caddy를 먼저 설치하세요' : undefined}
         >
           {busy ? '...' : isRunning ? '중지' : '시작'}
         </button>

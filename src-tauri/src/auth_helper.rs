@@ -1,14 +1,14 @@
 //! 관리자 권한 자동 캐싱.
 //!
 //! # 흐름
-//! 1. 권한이 필요한 작업 → `sudo -n /usr/local/bin/perch-helper <cmd>` 먼저 시도
+//! 1. 권한이 필요한 작업 → `sudo -n /usr/local/bin/bellboy-helper <cmd>` 먼저 시도
 //! 2. 실패(첫 실행) → osascript 한 번으로 **실제 작업 + 래퍼 스크립트 + sudoers + pam_tid** 설치
 //! 3. 이후 재실행 → `sudo -n` 성공, 프롬프트 없음
 //!
 //! # 왜 래퍼 스크립트?
 //! macOS의 visudo는 sudoers 규칙 경로에 공백이나 특수문자를 허용하지 않습니다.
 //! (`Application Support` 경로에서 `\ `·`?` 모두 문법 오류)
-//! 래퍼 스크립트를 `/usr/local/bin/perch-helper`(공백 없음)에 두면
+//! 래퍼 스크립트를 `/usr/local/bin/bellboy-helper`(공백 없음)에 두면
 //! sudoers 규칙이 단순해지고 검증도 통과합니다.
 //!
 //! # Touch ID
@@ -18,9 +18,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::process::Command;
 
-pub const HOSTS_STAGING_PATH: &str = "/tmp/perch-hosts-staging";
-pub const HELPER_PATH: &str = "/usr/local/bin/perch-helper";
-const SUDOERS_PATH: &str = "/etc/sudoers.d/perch";
+pub const HOSTS_STAGING_PATH: &str = "/tmp/bellboy-hosts-staging";
+pub const HELPER_PATH: &str = "/usr/local/bin/bellboy-helper";
+const SUDOERS_PATH: &str = "/etc/sudoers.d/bellboy";
 const PAM_SUDO_LOCAL_PATH: &str = "/etc/pam.d/sudo_local";
 
 pub fn is_installed() -> bool {
@@ -39,13 +39,13 @@ pub fn install_and_run(operation: Operation) -> Result<()> {
     // 래퍼 스크립트 내용을 생성합니다. user/caddy_dir을 하드코딩해 런타임 변수 의존을 없앱니다.
     let helper_content = build_helper_script(&user, &caddy_dir)?;
     let sudoers_content = build_sudoers_content(&user)?;
-    let pam_content = "# Managed by Perch\nauth       sufficient     pam_tid.so\n";
+    let pam_content = "# Managed by Bellboy\nauth       sufficient     pam_tid.so\n";
 
     // 임시 파일에 먼저 써둡니다 (user 권한으로 가능).
     let pid = std::process::id();
-    let helper_tmp = format!("/tmp/perch-helper-{}.tmp", pid);
-    let sudoers_tmp = format!("/tmp/perch-sudoers-{}.tmp", pid);
-    let pam_tmp = format!("/tmp/perch-pam-{}.tmp", pid);
+    let helper_tmp = format!("/tmp/bellboy-helper-{}.tmp", pid);
+    let sudoers_tmp = format!("/tmp/bellboy-sudoers-{}.tmp", pid);
+    let pam_tmp = format!("/tmp/bellboy-pam-{}.tmp", pid);
 
     std::fs::write(&helper_tmp, &helper_content)
         .with_context(|| format!("stage helper at {}", helper_tmp))?;
@@ -173,7 +173,7 @@ fn build_helper_script(user: &str, caddy_dir: &str) -> Result<String> {
              exec /usr/sbin/chown -R '{user}:staff' '{caddy}'\n\
              ;;\n\
            *)\n\
-             echo \"perch-helper: unknown command: ${{1:-}}\" >&2\n\
+             echo \"bellboy-helper: unknown command: ${{1:-}}\" >&2\n\
              exit 1\n\
              ;;\n\
          esac\n",
@@ -188,7 +188,7 @@ fn build_sudoers_content(user: &str) -> Result<String> {
         return Err(anyhow!("USER에 허용되지 않는 문자: {}", user));
     }
     Ok(format!(
-        "# Managed by Perch — do not edit manually\n\
+        "# Managed by Bellboy — do not edit manually\n\
          {user} ALL=(root) NOPASSWD: {helper} sync-hosts\n\
          {user} ALL=(root) NOPASSWD: {helper} repair-caddy\n",
         user = user,
@@ -197,7 +197,7 @@ fn build_sudoers_content(user: &str) -> Result<String> {
 }
 
 fn validate_sudoers_content(content: &str) -> Result<()> {
-    let tmp = format!("/tmp/perch-sudoers-validate-{}.tmp", std::process::id());
+    let tmp = format!("/tmp/bellboy-sudoers-validate-{}.tmp", std::process::id());
     std::fs::write(&tmp, content).context("write validation temp")?;
     let out = Command::new("/usr/sbin/visudo")
         .args(["-c", "-f", &tmp])
@@ -252,7 +252,7 @@ mod tests {
         let script = build_helper_script("alice", "/Users/alice/Library/Application Support/Caddy").unwrap();
         assert!(script.contains("sync-hosts"));
         assert!(script.contains("repair-caddy"));
-        assert!(script.contains("/bin/cp '/tmp/perch-hosts-staging' /etc/hosts"));
+        assert!(script.contains("/bin/cp '/tmp/bellboy-hosts-staging' /etc/hosts"));
         assert!(script.contains("/usr/sbin/chown -R 'alice:staff'"));
         assert!(script.contains("Application Support/Caddy"));
     }
@@ -263,7 +263,7 @@ mod tests {
         // helper 경로에 공백 없음
         for line in content.lines().filter(|l| l.contains("NOPASSWD")) {
             let cmd_part = line.split("NOPASSWD:").nth(1).unwrap_or("");
-            // /usr/local/bin/perch-helper 부분만 검사
+            // /usr/local/bin/bellboy-helper 부분만 검사
             let helper = cmd_part.trim().split_whitespace().next().unwrap_or("");
             assert!(!helper.contains(' '), "helper path has space: {}", helper);
         }

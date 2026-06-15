@@ -9,12 +9,14 @@ import {
 import type {
   CaddyHealth,
   CertificateTrustStatus,
+  DependencyStatus,
   ForeignCaddyError,
   ProcessInfo,
 } from './api'
 import type { Site, Config } from './types'
 import { emptySite } from './types'
 import { StatusBar } from './components/StatusBar'
+import { DependencyBanner } from './components/DependencyBanner'
 import { SiteCard } from './components/SiteCard'
 import { SiteDialog } from './components/SiteDialog'
 
@@ -22,7 +24,7 @@ type RepairPrompt = { message: string; path: string }
 type TrustPrompt = CertificateTrustStatus
 type ForeignPrompt = {
   message: string
-  perchOwned: ProcessInfo[]
+  bellboyOwned: ProcessInfo[]
   external: ProcessInfo[]
   /** Whether confirming should retry `start_caddy` (true) or just kill (false). */
   retryAfterKill: boolean
@@ -40,9 +42,13 @@ export default function App() {
   const [foreignPrompt, setForeignPrompt] = useState<ForeignPrompt | null>(null)
   const [certificateTrust, setCertificateTrust] = useState<CertificateTrustStatus | null>(null)
   const [nodeExtraCaCerts, setNodeExtraCaCerts] = useState(false)
+  const [dependency, setDependency] = useState<DependencyStatus | null>(null)
+  const [installing, setInstalling] = useState(false)
 
   const isRunning = health?.is_running ?? false
   const level = healthLevel(health)
+  // Caddy가 없으면 시작해도 spawn 실패뿐이라 토글을 막는다(설치 후 자동 해제).
+  const caddyMissing = dependency ? !dependency.caddy_installed : false
 
   const refreshCertificateTrustStatus = useCallback(async () => {
     setCertificateTrust(await api.getCertificateTrustStatus())
@@ -51,12 +57,14 @@ export default function App() {
   const refreshHealth = useCallback(async () => {
     setRefreshing(true)
     try {
-      const [h, trust] = await Promise.all([
+      const [h, trust, deps] = await Promise.all([
         api.refreshHealth(),
         api.getCertificateTrustStatus(),
+        api.getDependencyStatus(),
       ])
       setHealth(h)
       setCertificateTrust(trust)
+      setDependency(deps)
     } catch (e) {
       setError(formatError(e))
     } finally {
@@ -66,16 +74,18 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, h, trust, nodeTls] = await Promise.all([
+      const [c, h, trust, nodeTls, deps] = await Promise.all([
         api.getConfig(),
         api.refreshHealth(),
         api.getCertificateTrustStatus(),
         api.getNodeExtraCaCerts(),
+        api.getDependencyStatus(),
       ])
       setConfig(c)
       setHealth(h)
       setCertificateTrust(trust)
       setNodeExtraCaCerts(nodeTls)
+      setDependency(deps)
     } catch (e) {
       setError(String(e))
     }
@@ -99,7 +109,7 @@ export default function App() {
 
   useEffect(() => {
     // External tooling (terminal kills, brew services, system sleep) can mutate
-    // caddy state while Perch is in the background. Resync the moment the user
+    // caddy state while Bellboy is in the background. Resync the moment the user
     // brings the window back.
     const onFocus = () => {
       refreshHealth()
@@ -154,12 +164,12 @@ export default function App() {
 
   const handleConfirmKillForeign = async () => {
     if (!foreignPrompt) return
-    const { perchOwned, external, retryAfterKill } = foreignPrompt
+    const { bellboyOwned, external, retryAfterKill } = foreignPrompt
     setForeignPrompt(null)
     setBusy(true)
     setError(null)
     try {
-      const pids = [...perchOwned, ...external].map((p) => p.pid)
+      const pids = [...bellboyOwned, ...external].map((p) => p.pid)
       await api.killForeignCaddy(pids)
       if (retryAfterKill) {
         await runStart()
@@ -234,6 +244,21 @@ export default function App() {
     }
   }
 
+  const handleInstallCaddy = async () => {
+    setInstalling(true)
+    setError(null)
+    try {
+      await api.installCaddy()
+    } catch (e) {
+      setError(formatError(e))
+    } finally {
+      // 성공·실패와 무관하게 실제 설치 상태를 다시 읽어 배너·시작 버튼을 동기화한다.
+      // (brew가 거짓 실패를 내도 caddy가 깔렸으면 배너가 사라지도록)
+      await refreshHealth()
+      setInstalling(false)
+    }
+  }
+
   const applyConfig = async (next: Config) => {
     setBusy(true)
     setError(null)
@@ -252,7 +277,7 @@ export default function App() {
     if (health.sighting.kind === 'foreign') {
       setForeignPrompt({
         message: '다른 Caddy 프로세스가 감지되었습니다. 종료한 뒤 상태가 정상화되는지 확인합니다.',
-        perchOwned: health.sighting.perch_owned,
+        bellboyOwned: health.sighting.bellboy_owned,
         external: health.sighting.external,
         retryAfterKill: false,
       })
@@ -271,7 +296,16 @@ export default function App() {
         refreshing={refreshing}
         certificateTrust={certificateTrust}
         onTrustCertificate={handleRequestTrustCertificate}
+        toggleDisabled={caddyMissing}
       />
+
+      {dependency && (
+        <DependencyBanner
+          status={dependency}
+          installing={installing}
+          onInstall={handleInstallCaddy}
+        />
+      )}
 
       {level === 'warning' && (
         <div className="warning" onClick={handleWarningClick}>
@@ -375,11 +409,11 @@ export default function App() {
             </div>
             <div className="dialog-body">
               <p>{foreignPrompt.message}</p>
-              {foreignPrompt.perchOwned.length > 0 && (
+              {foreignPrompt.bellboyOwned.length > 0 && (
                 <>
-                  <p className="muted small">Perch가 이전에 띄워둔 Caddy:</p>
+                  <p className="muted small">Bellboy가 이전에 띄워둔 Caddy:</p>
                   <ul className="process-list">
-                    {foreignPrompt.perchOwned.map((p) => (
+                    {foreignPrompt.bellboyOwned.map((p) => (
                       <li key={p.pid}>
                         <code>PID {p.pid}</code> — {p.command}
                       </li>
@@ -389,7 +423,7 @@ export default function App() {
               )}
               {foreignPrompt.external.length > 0 && (
                 <>
-                  <p className="muted small">Perch 외부에서 실행 중인 Caddy:</p>
+                  <p className="muted small">Bellboy 외부에서 실행 중인 Caddy:</p>
                   <ul className="process-list">
                     {foreignPrompt.external.map((p) => (
                       <li key={p.pid}>
@@ -445,7 +479,7 @@ export default function App() {
 function foreignPromptFromError(e: ForeignCaddyError, retryAfterKill: boolean): ForeignPrompt {
   return {
     message: e.message,
-    perchOwned: e.perch_owned,
+    bellboyOwned: e.bellboy_owned,
     external: e.external,
     retryAfterKill,
   }
@@ -458,7 +492,7 @@ function healthHint(health: CaddyHealth | null): string | undefined {
   bits.push(`Admin API(:2019): ${health.admin_api_reachable ? '응답 OK' : '응답 없음'}`)
   if (health.sighting.kind === 'foreign') {
     const count =
-      health.sighting.perch_owned.length + health.sighting.external.length
+      health.sighting.bellboy_owned.length + health.sighting.external.length
     bits.push(`외부 Caddy ${count}개 감지`)
   }
   return bits.join('\n')

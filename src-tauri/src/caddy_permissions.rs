@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 
 const CADDY_DIR: &str = "Library/Application Support/Caddy";
-const PROBE_FILENAME: &str = ".perch-write-probe";
+const PROBE_FILENAME: &str = ".bellboy-write-probe";
 const ROOT_CRT_REL: &str = "pki/authorities/local/root.crt";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

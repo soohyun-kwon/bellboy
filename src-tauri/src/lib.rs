@@ -1,4 +1,5 @@
 mod auth_helper;
+mod caddy_install;
 mod caddy_permissions;
 mod caddy_process;
 mod caddy_supervisor;
@@ -34,11 +35,11 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 enum StartError {
     PermissionRepairRequired { message: String, path: String },
     /// An external caddy (one we didn't spawn) is already holding the ports.
-    /// `external` are non-Perch processes — the user must confirm before kill.
-    /// `perch_owned` are caddies started with our Caddyfile (orphans we can clean).
+    /// `external` are non-Bellboy processes — the user must confirm before kill.
+    /// `bellboy_owned` are caddies started with our Caddyfile (orphans we can clean).
     ForeignCaddyDetected {
         message: String,
-        perch_owned: Vec<ProcessInfo>,
+        bellboy_owned: Vec<ProcessInfo>,
         external: Vec<ProcessInfo>,
     },
     Other { message: String },
@@ -127,20 +128,20 @@ async fn start_caddy(state: State<'_, AppState>) -> Result<(), StartError> {
     }
 
     // Pre-flight: another caddy already holds :80/:443/:2019. Auto-clean orphans
-    // we recognize as Perch's; surface external ones to the user.
+    // we recognize as Bellboy's; surface external ones to the user.
     let caddyfile_path = config_store::caddyfile_path().map_err(StartError::other)?;
     match caddy_supervisor::inspect(state.caddy.current_pid(), &caddyfile_path) {
-        CaddySighting::Foreign { perch_owned, external } if external.is_empty() => {
-            let pids: Vec<u32> = perch_owned.iter().map(|p| p.pid).collect();
+        CaddySighting::Foreign { bellboy_owned, external } if external.is_empty() => {
+            let pids: Vec<u32> = bellboy_owned.iter().map(|p| p.pid).collect();
             caddy_supervisor::kill_pids(&pids).map_err(StartError::other)?;
             // Give the kernel a moment to release the listening sockets before
             // we try to bind them ourselves.
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
-        CaddySighting::Foreign { perch_owned, external } => {
+        CaddySighting::Foreign { bellboy_owned, external } => {
             return Err(StartError::ForeignCaddyDetected {
                 message: "다른 Caddy 프로세스가 이미 실행 중입니다. 종료한 뒤 다시 시작할 수 있습니다.".into(),
-                perch_owned,
+                bellboy_owned,
                 external,
             });
         }
@@ -165,23 +166,34 @@ async fn start_caddy(state: State<'_, AppState>) -> Result<(), StartError> {
 
     state.caddy.start(&path).map_err(StartError::other)?;
 
-    // Caddy may spawn successfully and then die within a few hundred ms (port
-    // bind, TLS provisioning, etc.). Give it a beat, then surface the log tail
-    // so the user isn't left staring at a silent "stopped" UI.
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    // Caddy may spawn and then die within a few hundred ms (port bind, TLS
+    // provisioning, etc.), and its admin API (:2019) usually binds a beat after
+    // the process goes live. Poll for readiness instead of a fixed sleep: stop
+    // as soon as the process dies (→ failure path below) or the admin socket
+    // accepts. A flat 700ms wait used to leave a stale "admin API 응답 없음"
+    // warning whenever provisioning ran past that window.
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if !state.caddy.is_running() {
+            break;
+        }
+        if caddy_supervisor::admin_api_reachable() {
+            break;
+        }
+    }
 
     // Caddy may have (re)generated its local CA. Rebuild the bundle so
     // NODE_EXTRA_CA_CERTS stays up to date for new Node processes.
     if node_env::is_enabled() {
         if let Err(e) = node_env::rebuild_bundle() {
-            eprintln!("[perch] ca-bundle rebuild failed: {e}");
+            eprintln!("[bellboy] ca-bundle rebuild failed: {e}");
         }
     }
 
     if !state.caddy.is_running() {
         let detail = caddy_process::recent_failure_summary().unwrap_or_default();
         let message = if detail.is_empty() {
-            "Caddy가 시작 직후 종료되었습니다. 로그: ~/Library/Application Support/perch/caddy.log"
+            "Caddy가 시작 직후 종료되었습니다. 로그: ~/Library/Application Support/bellboy/caddy.log"
                 .to_string()
         } else {
             format!("Caddy가 시작 직후 종료되었습니다.\n\n{}", detail)
@@ -243,6 +255,25 @@ fn get_certificate_trust_status() -> CmdResult<CertificateTrustStatus> {
     system_trust::status().map_err(err)
 }
 
+/// Caddy(엔진) / Homebrew 설치 여부 스냅샷. 프론트가 미설치 배너를 그리는 데 사용.
+#[tauri::command]
+fn get_dependency_status() -> caddy_install::DependencyStatus {
+    caddy_install::status()
+}
+
+/// `brew install caddy`를 실행하고, 끝나면 갱신된 설치 상태를 반환합니다.
+/// 네트워크 다운로드를 동반하는 블로킹 작업이라 별도 스레드에서 돌립니다.
+#[tauri::command]
+async fn install_caddy() -> CmdResult<caddy_install::DependencyStatus> {
+    tauri::async_runtime::spawn_blocking(|| {
+        caddy_install::install_caddy()?;
+        Ok::<_, anyhow::Error>(caddy_install::status())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
 #[tauri::command]
 async fn trust_caddy_certificate() -> CmdResult<CertificateTrustStatus> {
     tauri::async_runtime::spawn_blocking(system_trust::trust_caddy_root)
@@ -251,10 +282,10 @@ async fn trust_caddy_certificate() -> CmdResult<CertificateTrustStatus> {
         .map_err(err)
 }
 
-/// Cleans up Caddy state left over from a previous Perch session: stale PID
+/// Cleans up Caddy state left over from a previous Bellboy session: stale PID
 /// files plus any orphaned caddy process still using *our* Caddyfile.
 ///
-/// We intentionally do not touch external caddies here — only Perch-spawned
+/// We intentionally do not touch external caddies here — only Bellboy-spawned
 /// orphans. External processes get surfaced through `refresh_health` and
 /// `start_caddy`'s pre-flight, where the user can confirm before we kill them.
 fn reconcile_on_boot() {
@@ -262,11 +293,11 @@ fn reconcile_on_boot() {
         return;
     };
     // `our_pid = None` — we have no in-process child yet at boot.
-    if let CaddySighting::Foreign { perch_owned, .. } =
+    if let CaddySighting::Foreign { bellboy_owned, .. } =
         caddy_supervisor::inspect(None, &caddyfile)
     {
-        if !perch_owned.is_empty() {
-            let pids: Vec<u32> = perch_owned.iter().map(|p| p.pid).collect();
+        if !bellboy_owned.is_empty() {
+            let pids: Vec<u32> = bellboy_owned.iter().map(|p| p.pid).collect();
             let _ = caddy_supervisor::kill_pids(&pids);
         }
     }
@@ -297,6 +328,8 @@ pub fn run() {
             set_node_extra_ca_certs,
             get_certificate_trust_status,
             trust_caddy_certificate,
+            get_dependency_status,
+            install_caddy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

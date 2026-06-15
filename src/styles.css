@@ -461,6 +461,28 @@ button:disabled {
   cursor: pointer;
   font-size: 13px;
 }
+.dependency-banner {
+  margin: 10px 20px 0;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.dependency-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.dependency-banner .btn-primary {
+  flex-shrink: 0;
+}
 .process-list {
   margin: 6px 0 12px;
   padding-left: 18px;

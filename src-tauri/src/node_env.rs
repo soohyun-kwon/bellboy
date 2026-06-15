@@ -16,7 +16,7 @@ use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
-const LABEL: &str = "io.perch.node-tls";
+const LABEL: &str = "io.bellboy.node-tls";
 const ENV_VAR: &str = "NODE_EXTRA_CA_CERTS";
 
 // macOS system CA bundle (public roots — needed for external HTTPS calls too)
@@ -62,16 +62,16 @@ pub fn rebuild_bundle() -> Result<PathBuf> {
     if let Some(caddy_root) = caddy_root_cert_path() {
         match std::fs::read_to_string(&caddy_root) {
             Ok(cert) => {
-                content.push_str("\n# Caddy local CA (managed by Perch)\n");
+                content.push_str("\n# Caddy local CA (managed by Bellboy)\n");
                 content.push_str(&cert);
             }
             Err(e) => {
                 // Non-fatal: bundle still usable for public CAs
-                eprintln!("[perch] warning: could not read Caddy root cert: {e}");
+                eprintln!("[bellboy] warning: could not read Caddy root cert: {e}");
             }
         }
     } else {
-        eprintln!("[perch] warning: Caddy root cert not found — start Caddy first");
+        eprintln!("[bellboy] warning: Caddy root cert not found — start Caddy first");
     }
 
     std::fs::write(&out, content)?;
@@ -130,7 +130,7 @@ pub fn disable() -> Result<()> {
     Ok(())
 }
 
-const ZSHENV_MARKER: &str = "# perch:node-tls";
+const ZSHENV_MARKER: &str = "# bellboy:node-tls";
 
 fn zshenv_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;

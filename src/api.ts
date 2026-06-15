@@ -18,6 +18,15 @@ export const api = {
   getNodeExtraCaCerts: () => invoke<boolean>('get_node_extra_ca_certs'),
   setNodeExtraCaCerts: (enabled: boolean) =>
     invoke<void>('set_node_extra_ca_certs', { enabled }),
+  getDependencyStatus: () => invoke<DependencyStatus>('get_dependency_status'),
+  installCaddy: () => invoke<DependencyStatus>('install_caddy'),
+}
+
+/** Caddy(엔진) / Homebrew 설치 여부. 미설치 배너 렌더에 사용. */
+export type DependencyStatus = {
+  caddy_installed: boolean
+  caddy_path: string | null
+  homebrew_installed: boolean
 }
 
 export type ProcessInfo = { pid: number; command: string }
@@ -26,7 +35,7 @@ export type CaddySighting =
   | { kind: 'none' }
   | { kind: 'ours_alive'; pid: number }
   | { kind: 'ours_dead' }
-  | { kind: 'foreign'; perch_owned: ProcessInfo[]; external: ProcessInfo[] }
+  | { kind: 'foreign'; bellboy_owned: ProcessInfo[]; external: ProcessInfo[] }
 
 export type CaddyHealth = {
   is_running: boolean
@@ -73,11 +82,11 @@ export function isPermissionRepairError(e: unknown): e is PermissionRepairError 
   )
 }
 
-/** Rejected by `start_caddy` when a non-Perch caddy already holds the ports. */
+/** Rejected by `start_caddy` when a non-Bellboy caddy already holds the ports. */
 export type ForeignCaddyError = {
   kind: 'foreign_caddy_detected'
   message: string
-  perch_owned: ProcessInfo[]
+  bellboy_owned: ProcessInfo[]
   external: ProcessInfo[]
 }
 

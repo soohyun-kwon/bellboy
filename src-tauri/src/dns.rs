@@ -1,6 +1,6 @@
 //! External DNS resolver that bypasses `/etc/hosts`.
 //!
-//! Why this exists: Perch adds `127.0.0.1 <domain>` entries to /etc/hosts for
+//! Why this exists: Bellboy adds `127.0.0.1 <domain>` entries to /etc/hosts for
 //! every managed site. If the user also configures a proxy rule whose target
 //! is that same domain (the "local frontend + real remote API" pattern), the
 //! OS resolver will return 127.0.0.1 and Caddy will loop back to itself.

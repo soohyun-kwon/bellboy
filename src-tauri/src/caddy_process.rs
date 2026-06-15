@@ -5,7 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 /// File under `app_dir` recording the PID of the Caddy child we spawned, so that
-/// a fresh Perch launch can tell its own caddy (which it should adopt or kill
+/// a fresh Bellboy launch can tell its own caddy (which it should adopt or kill
 /// cleanly) apart from a foreign caddy left behind by `brew services`, a manual
 /// `caddy run`, or a previous crash.
 const PID_FILENAME: &str = "caddy.pid";
@@ -56,7 +56,7 @@ impl CaddyState {
                 )
             })?;
 
-        // Pipe stdout/stderr to ~/Library/Application Support/perch/caddy.log so
+        // Pipe stdout/stderr to ~/Library/Application Support/bellboy/caddy.log so
         // that a sudden exit (e.g. port-bind permission denied) is visible to
         // the user instead of silently vanishing.
         if let Ok(log_path) = crate::config_store::app_dir().map(|d| d.join("caddy.log")) {
@@ -147,19 +147,31 @@ impl CaddyState {
     }
 }
 
+/// Common Homebrew prefixes that macOS GUI launches strip from PATH.
+const CADDY_FALLBACKS: [&str; 2] = ["/opt/homebrew/bin/caddy", "/usr/local/bin/caddy"];
+
+/// Locates the `caddy` binary only if it actually exists on disk. Returns `None`
+/// when Caddy isn't installed — the single source of truth for both the
+/// installed-or-not check (`caddy_install`) and the spawn path (`caddy_binary`).
+pub fn resolve_caddy() -> Option<PathBuf> {
+    resolve_binary("caddy", &CADDY_FALLBACKS)
+}
+
 fn caddy_binary() -> PathBuf {
-    if let Some(path) = find_in_path("caddy") {
-        return path;
-    }
+    resolve_caddy().unwrap_or_else(|| PathBuf::from("caddy"))
+}
 
-    for path in ["/opt/homebrew/bin/caddy", "/usr/local/bin/caddy"] {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return path;
-        }
+/// Finds `name` on PATH, then falls back to each absolute path in turn, returning
+/// the first that exists. GUI app launches don't inherit the user's shell PATH,
+/// so tools installed under Homebrew (`caddy`, `brew`) need these fallbacks.
+pub(crate) fn resolve_binary(name: &str, fallbacks: &[&str]) -> Option<PathBuf> {
+    if let Some(path) = find_in_path(name) {
+        return Some(path);
     }
-
-    PathBuf::from("caddy")
+    fallbacks
+        .iter()
+        .map(|p| PathBuf::from(*p))
+        .find(|path| path.is_file())
 }
 
 fn find_in_path(binary_name: &str) -> Option<PathBuf> {

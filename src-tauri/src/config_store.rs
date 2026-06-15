@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub fn app_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME not set")?;
-    let dir = PathBuf::from(home).join("Library/Application Support/perch");
+    let dir = PathBuf::from(home).join("Library/Application Support/bellboy");
     std::fs::create_dir_all(&dir).context("failed to create app dir")?;
     Ok(dir)
 }

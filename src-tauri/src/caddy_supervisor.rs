@@ -1,8 +1,8 @@
-//! Detects caddy processes outside the one Perch currently owns, and tells
-//! callers whether they were spawned by Perch (our Caddyfile in their argv) or
+//! Detects caddy processes outside the one Bellboy currently owns, and tells
+//! callers whether they were spawned by Bellboy (our Caddyfile in their argv) or
 //! by something else (`brew services`, a manual `caddy run`, another tool).
 //!
-//! Why this exists: a force-quit or crashed Perch leaves its caddy child alive.
+//! Why this exists: a force-quit or crashed Bellboy leaves its caddy child alive.
 //! On the next launch, [`CaddyState::start`](caddy_process.rs) will happily
 //! spawn another caddy, and the two race for ports 80/443/2019. That race is
 //! what produced the `tlsv1 alert internal error` we observed in the wild.
@@ -25,10 +25,10 @@ pub enum CaddySighting {
     /// We had a pid file or tracked child, but it's gone — caller should clear stale state.
     OursDead,
     /// One or more caddy processes are running that we don't own.
-    /// `perch_owned` are caddies started with Perch's Caddyfile (safe to auto-kill).
+    /// `bellboy_owned` are caddies started with Bellboy's Caddyfile (safe to auto-kill).
     /// `external` are caddies from other sources (need user confirmation).
     Foreign {
-        perch_owned: Vec<ProcessInfo>,
+        bellboy_owned: Vec<ProcessInfo>,
         external: Vec<ProcessInfo>,
     },
 }
@@ -41,7 +41,7 @@ pub struct ProcessInfo {
 
 /// Scans the process table and classifies what's running. `our_pid` should be
 /// the PID of the [`CaddyState`]-owned child if any.
-pub fn inspect(our_pid: Option<u32>, perch_caddyfile: &Path) -> CaddySighting {
+pub fn inspect(our_pid: Option<u32>, bellboy_caddyfile: &Path) -> CaddySighting {
     let pids = pgrep_caddy().unwrap_or_default();
 
     if let Some(ours) = our_pid {
@@ -53,7 +53,7 @@ pub fn inspect(our_pid: Option<u32>, perch_caddyfile: &Path) -> CaddySighting {
     let pid_file = crate::caddy_process::read_pid_file();
     let owned_pid = our_pid.or(pid_file);
 
-    let mut perch_owned = Vec::new();
+    let mut bellboy_owned = Vec::new();
     let mut external = Vec::new();
     let mut ours_alive = false;
 
@@ -64,14 +64,14 @@ pub fn inspect(our_pid: Option<u32>, perch_caddyfile: &Path) -> CaddySighting {
         }
         let command = process_command(*pid).unwrap_or_default();
         let info = ProcessInfo { pid: *pid, command };
-        if cmdline_uses_perch_caddyfile(&info.command, perch_caddyfile) {
-            perch_owned.push(info);
+        if cmdline_uses_bellboy_caddyfile(&info.command, bellboy_caddyfile) {
+            bellboy_owned.push(info);
         } else {
             external.push(info);
         }
     }
 
-    if perch_owned.is_empty() && external.is_empty() {
+    if bellboy_owned.is_empty() && external.is_empty() {
         return match owned_pid {
             Some(pid) if ours_alive => CaddySighting::OursAlive { pid },
             Some(_) => CaddySighting::OursDead,
@@ -80,7 +80,7 @@ pub fn inspect(our_pid: Option<u32>, perch_caddyfile: &Path) -> CaddySighting {
     }
 
     CaddySighting::Foreign {
-        perch_owned,
+        bellboy_owned,
         external,
     }
 }
@@ -144,8 +144,8 @@ fn process_command(pid: u32) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn cmdline_uses_perch_caddyfile(command: &str, perch_caddyfile: &Path) -> bool {
-    let Some(needle) = perch_caddyfile.to_str() else {
+fn cmdline_uses_bellboy_caddyfile(command: &str, bellboy_caddyfile: &Path) -> bool {
+    let Some(needle) = bellboy_caddyfile.to_str() else {
         return false;
     };
     if needle.is_empty() {
@@ -167,21 +167,21 @@ mod tests {
     }
 
     #[test]
-    fn classifies_perch_owned_via_caddyfile_path() {
-        let perch_cf = PathBuf::from("/Users/me/Library/Application Support/perch/Caddyfile");
-        let perch_cmd =
-            "/opt/homebrew/bin/caddy run --config /Users/me/Library/Application Support/perch/Caddyfile --adapter caddyfile";
+    fn classifies_bellboy_owned_via_caddyfile_path() {
+        let bellboy_cf = PathBuf::from("/Users/me/Library/Application Support/bellboy/Caddyfile");
+        let bellboy_cmd =
+            "/opt/homebrew/bin/caddy run --config /Users/me/Library/Application Support/bellboy/Caddyfile --adapter caddyfile";
         let brew_cmd = "/opt/homebrew/opt/caddy/bin/caddy run --config /opt/homebrew/etc/Caddyfile";
 
-        assert!(cmdline_uses_perch_caddyfile(perch_cmd, &perch_cf));
-        assert!(!cmdline_uses_perch_caddyfile(brew_cmd, &perch_cf));
+        assert!(cmdline_uses_bellboy_caddyfile(bellboy_cmd, &bellboy_cf));
+        assert!(!cmdline_uses_bellboy_caddyfile(brew_cmd, &bellboy_cf));
     }
 
     #[test]
-    fn empty_path_is_never_perch_owned() {
+    fn empty_path_is_never_bellboy_owned() {
         // Without the guard, `"any".contains("")` would be true and we'd
         // auto-kill every caddy on the box.
         let cf = PathBuf::from("");
-        assert!(!cmdline_uses_perch_caddyfile("anything", &cf));
+        assert!(!cmdline_uses_bellboy_caddyfile("anything", &cf));
     }
 }

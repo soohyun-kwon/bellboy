@@ -1,7 +1,7 @@
 //! /etc/hosts editor.
 //!
 //! Strategy: we keep a clearly-marked block at the bottom of /etc/hosts that
-//! Perch owns. The rest of the file is untouched. Writing requires sudo, so we
+//! Bellboy owns. The rest of the file is untouched. Writing requires sudo, so we
 //! stage a temp file and call `osascript` to `cp` it in place using the system
 //! admin-privilege prompt. Future: move to an SMAppService helper so we don't
 //! prompt on every write.
@@ -10,11 +10,11 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 const HOSTS_PATH: &str = "/etc/hosts";
-const MARKER_START: &str = "# >>> perch managed (do not edit between markers)";
-const MARKER_END: &str = "# <<< perch managed";
+const MARKER_START: &str = "# >>> bellboy managed (do not edit between markers)";
+const MARKER_END: &str = "# <<< bellboy managed";
 
 /// Sync /etc/hosts so that exactly `domains` are mapped to 127.0.0.1 inside the
-/// Perch-managed block. Returns without touching sudo if no changes are needed.
+/// Bellboy-managed block. Returns without touching sudo if no changes are needed.
 pub fn sync(domains: &[String]) -> Result<()> {
     let current =
         std::fs::read_to_string(HOSTS_PATH).with_context(|| format!("read {}", HOSTS_PATH))?;

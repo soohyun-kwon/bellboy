@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="gRed" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d8472f"/><stop offset="1" stop-color="#9c2a1d"/>
+    </linearGradient>
+    <linearGradient id="gCream" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffdf8"/><stop offset="0.55" stop-color="#f3ead8"/><stop offset="1" stop-color="#dccdb0"/>
+    </linearGradient>
+    <linearGradient id="gGold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6df97"/><stop offset="1" stop-color="#cf9f40"/>
+    </linearGradient>
+    <linearGradient id="gBronze" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b98e3e"/><stop offset="1" stop-color="#6f5320"/>
+    </linearGradient>
+  </defs>
+  <rect x="80" y="80" width="864" height="864" rx="198" fill="url(#gRed)"/>
+  <ellipse cx="512" cy="700" rx="220" ry="24" fill="#000000" fill-opacity="0.20"/>
+  <rect x="300" y="656" width="424" height="38" rx="18" fill="url(#gBronze)"/>
+  <rect x="346" y="622" width="332" height="40" rx="16" fill="url(#gBronze)"/>
+  <path d="M332 616 C318 470 392 372 512 372 C632 372 706 470 692 616 Z" fill="url(#gCream)"/>
+  <rect x="322" y="602" width="380" height="28" rx="14" fill="url(#gGold)"/>
+  <path d="M360 500 Q512 534 664 500" stroke="#caa85e" stroke-width="18" fill="none" opacity="0.35" stroke-linecap="round"/>
+  <ellipse cx="436" cy="468" rx="27" ry="76" fill="#ffffff" fill-opacity="0.38" transform="rotate(-12 436 468)"/>
+  <ellipse cx="478" cy="418" rx="22" ry="15" fill="#ffffff" fill-opacity="0.5"/>
+  <rect x="500" y="330" width="24" height="54" rx="10" fill="url(#gGold)"/>
+  <ellipse cx="512" cy="326" rx="31" ry="17" fill="url(#gGold)"/>
+  <polygon points="742,252 759,295 802,312 759,329 742,372 725,329 682,312 725,295" fill="url(#gGold)"/>
+  <polygon points="660,212 668,228 684,236 668,244 660,260 652,244 636,236 652,228" fill="url(#gGold)"/>
+</svg>

@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn safe_user_accepts_typical_names() {
-        assert!(is_safe_user("gwonsuhyeon"));
+        assert!(is_safe_user("alice"));
         assert!(is_safe_user("soo-hyun"));
         assert!(is_safe_user("user.name"));
         assert!(is_safe_user("user_1"));

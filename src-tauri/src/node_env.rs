@@ -12,6 +12,13 @@
 /// Fix: create a combined PEM bundle = system CAs + Caddy local CA, then
 /// point `NODE_EXTRA_CA_CERTS` at that bundle. Rebuilt every time Caddy starts
 /// (in case Caddy ever regenerates its CA).
+///
+/// Caveat — Next.js dev: its SSR/render workers are spawned with a sanitized
+/// environment that does NOT inherit `NODE_EXTRA_CA_CERTS`, so the bundle alone
+/// never reaches them and chat-host calls keep failing. `NODE_OPTIONS`, however,
+/// IS propagated to those workers, so the managed ~/.zshenv block also exports
+/// `NODE_OPTIONS=--use-system-ca` (Node 22.15+) to make them trust the Caddy
+/// root via the macOS keychain. Guarded so it is only added once.
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::process::Command;
@@ -130,45 +137,84 @@ pub fn disable() -> Result<()> {
     Ok(())
 }
 
-const ZSHENV_MARKER: &str = "# bellboy:node-tls";
+const ZSHENV_BLOCK_START: &str = "# >>> bellboy node-tls (managed — do not edit)";
+const ZSHENV_BLOCK_END: &str = "# <<< bellboy node-tls";
+/// Older builds wrote a single comment line + one export instead of a block.
+const ZSHENV_LEGACY_MARKER: &str = "# bellboy:node-tls";
 
 fn zshenv_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;
     Ok(PathBuf::from(home).join(".zshenv"))
 }
 
+/// Builds the managed ~/.zshenv block: the CA bundle export plus a guarded
+/// `NODE_OPTIONS=--use-system-ca` (needed for Next.js workers — see module docs).
+fn zshenv_block(bundle_str: &str) -> String {
+    let mut b = String::new();
+    b.push_str(ZSHENV_BLOCK_START);
+    b.push('\n');
+    b.push_str("# Node 가 Caddy 로컬 CA 를 신뢰하도록 (로컬 https 도메인 SSR 요청).\n");
+    b.push_str("export ");
+    b.push_str(ENV_VAR);
+    b.push_str("=\"");
+    b.push_str(bundle_str);
+    b.push_str("\"\n");
+    b.push_str("# Next.js dev 의 SSR/렌더 워커는 위 변수를 물려받지 못한다 → system CA(키체인) 사용을 강제한다.\n");
+    b.push_str("# (--use-system-ca 는 Node 22.15+ 전용이라, 이미 지정돼 있으면 중복 추가하지 않는다)\n");
+    b.push_str("case \":$NODE_OPTIONS:\" in\n");
+    b.push_str("  *:--use-system-ca:*) ;;\n");
+    b.push_str("  *) export NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--use-system-ca\" ;;\n");
+    b.push_str("esac\n");
+    b.push_str(ZSHENV_BLOCK_END);
+    b
+}
+
+/// Removes Bellboy's managed region — both the current START/END block and the
+/// legacy single-line `# bellboy:node-tls` marker form — leaving the rest intact.
+fn strip_managed(existing: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut inside = false;
+    let mut drop_next_export = false;
+    for line in existing.lines() {
+        let t = line.trim();
+        if t == ZSHENV_BLOCK_START {
+            inside = true;
+            continue;
+        }
+        if t == ZSHENV_BLOCK_END {
+            inside = false;
+            continue;
+        }
+        if inside {
+            continue;
+        }
+        // Legacy form: a lone marker comment followed by one export line.
+        if t == ZSHENV_LEGACY_MARKER {
+            drop_next_export = true;
+            continue;
+        }
+        if drop_next_export && t.starts_with("export NODE_EXTRA_CA_CERTS=") {
+            drop_next_export = false;
+            continue;
+        }
+        drop_next_export = false;
+        out.push(line);
+    }
+    while matches!(out.last(), Some(l) if l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
 fn zshenv_add(bundle_str: &str) -> Result<()> {
     let path = zshenv_path()?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-
-    // Already present — update the export line in place.
-    if existing.contains(ZSHENV_MARKER) {
-        let updated = existing
-            .lines()
-            .map(|l| {
-                if l.starts_with("export NODE_EXTRA_CA_CERTS=")
-                    && existing.contains(ZSHENV_MARKER)
-                {
-                    format!("export {ENV_VAR}=\"{bundle_str}\"")
-                } else {
-                    l.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&path, updated)?;
-        return Ok(());
+    let mut content = strip_managed(&existing);
+    if !content.is_empty() {
+        content.push_str("\n\n");
     }
-
-    // Append new block.
-    let block = format!(
-        "\n{marker}\nexport {var}=\"{path}\"\n",
-        marker = ZSHENV_MARKER,
-        var = ENV_VAR,
-        path = bundle_str,
-    );
-    let mut content = existing;
-    content.push_str(&block);
+    content.push_str(&zshenv_block(bundle_str));
+    content.push('\n');
     std::fs::write(&path, content)?;
     Ok(())
 }
@@ -179,16 +225,11 @@ fn zshenv_remove() -> Result<()> {
         Ok(s) => s,
         Err(_) => return Ok(()),
     };
-
-    if !existing.contains(ZSHENV_MARKER) {
-        return Ok(());
+    let mut content = strip_managed(&existing);
+    if !content.is_empty() {
+        content.push('\n');
     }
-
-    let filtered: Vec<&str> = existing
-        .lines()
-        .filter(|l| !l.starts_with(ZSHENV_MARKER) && !l.starts_with(&format!("export {ENV_VAR}=")))
-        .collect();
-    std::fs::write(&path, filtered.join("\n") + "\n")?;
+    std::fs::write(&path, content)?;
     Ok(())
 }
 
@@ -216,4 +257,37 @@ fn plist_content(bundle_path: &str) -> String {
         env_var = ENV_VAR,
         bundle_path = bundle_path,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_contains_both_levers() {
+        let b = zshenv_block("/tmp/ca.pem");
+        assert!(b.starts_with(ZSHENV_BLOCK_START));
+        assert!(b.trim_end().ends_with(ZSHENV_BLOCK_END));
+        assert!(b.contains("export NODE_EXTRA_CA_CERTS=\"/tmp/ca.pem\""));
+        assert!(b.contains("--use-system-ca"));
+    }
+
+    #[test]
+    fn strip_removes_own_block_and_is_idempotent() {
+        let base = ". \"$HOME/.cargo/env\"";
+        let once = format!("{base}\n\n{}", zshenv_block("/tmp/ca.pem"));
+        assert_eq!(strip_managed(&once), base);
+        // A second managed block (e.g. accidental double-add) is fully removed too.
+        let twice = format!("{once}\n\n{}", zshenv_block("/tmp/ca.pem"));
+        assert_eq!(strip_managed(&twice), base);
+    }
+
+    #[test]
+    fn strip_migrates_legacy_single_line_marker() {
+        let legacy = ". \"$HOME/.cargo/env\"\n\n# bellboy:node-tls\nexport NODE_EXTRA_CA_CERTS=\"/old/perch/ca-bundle.pem\"\n";
+        let stripped = strip_managed(legacy);
+        assert!(!stripped.contains("perch"));
+        assert!(!stripped.contains("bellboy:node-tls"));
+        assert!(stripped.contains(".cargo/env"));
+    }
 }
